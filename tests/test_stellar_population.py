@@ -183,3 +183,26 @@ class TestStellarPopulationAnalyzer:
         result = analyzer.analyze(catalog)
 
         assert result["n_photometric"] == 50
+
+    def test_sdss_individual_band_fallback(self):
+        """Should compute g-r from individual g and r magnitudes."""
+        rng = np.random.default_rng(99)
+        entries = [
+            CatalogEntry(
+                source_id=f"S_{i}",
+                ra=180 + rng.uniform(-0.01, 0.01),
+                dec=45 + rng.uniform(-0.01, 0.01),
+                mag=float(rng.uniform(14, 20)),
+                properties={
+                    "g": float(rng.uniform(15, 21)),
+                    "r": float(rng.uniform(14, 20)),
+                },
+            )
+            for i in range(50)
+        ]
+        catalog = StarCatalog(entries=entries, source="sdss")
+        analyzer = StellarPopulationAnalyzer()
+        result = analyzer.analyze(catalog)
+
+        assert result["n_photometric"] == 50
+        assert result["population_score"] >= 0.0

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from typing import Any
 
 import numpy as np
@@ -9,6 +10,32 @@ import numpy as np
 from star_pattern.utils.logging import get_logger
 
 logger = get_logger("evaluation.metrics")
+
+
+@dataclass
+class Anomaly:
+    """A single detected anomaly within a sky region."""
+
+    anomaly_type: str  # "lens_arc", "overdensity", "tidal_feature", etc.
+    detector: str  # "lens", "distribution", "galaxy", "kinematic", etc.
+    pixel_x: float | None = None  # pixel column (None for catalog-based)
+    pixel_y: float | None = None  # pixel row
+    sky_ra: float | None = None  # WCS-converted RA (or catalog RA)
+    sky_dec: float | None = None  # WCS-converted Dec (or catalog Dec)
+    score: float = 0.0  # detector-specific score/significance
+    properties: dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "anomaly_type": self.anomaly_type,
+            "detector": self.detector,
+            "pixel_x": self.pixel_x,
+            "pixel_y": self.pixel_y,
+            "sky_ra": self.sky_ra,
+            "sky_dec": self.sky_dec,
+            "score": self.score,
+            "properties": self.properties,
+        }
 
 
 def signal_to_noise(signal: np.ndarray, background_rms: float) -> float:
@@ -146,6 +173,7 @@ class PatternResult:
         self.details = details or {}
         self.metadata: dict[str, Any] = {}
         self.cross_matches: list[dict[str, Any]] = []
+        self.anomalies: list[Anomaly] = []
         self.hypothesis: str | None = None
         self.debate_verdict: str | None = None
         self.consensus_score: float | None = None
@@ -170,6 +198,7 @@ class PatternResult:
             "novelty": self.novelty,
             "combined_score": self.combined_score,
             "cross_matches": self.cross_matches,
+            "anomalies": [a.to_dict() for a in self.anomalies],
             "hypothesis": self.hypothesis,
             "debate_verdict": self.debate_verdict,
             "consensus_score": self.consensus_score,

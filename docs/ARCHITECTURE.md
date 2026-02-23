@@ -223,7 +223,8 @@ All configuration is expressed as Python dataclasses. `PipelineConfig.from_file(
 | `RegionData` | `sky_region.py` | Container binding a `SkyRegion` to its fetched data: `images: dict[str, FITSImage]` (band-keyed), `catalogs: dict[str, StarCatalog]` (source-keyed), `metadata: dict`. |
 | `CatalogEntry` | `catalog.py` | Single source: ra, dec, magnitude, proper motion (pmra, pmdec), parallax, color index, object type, source ID. Methods: to_dict(), from_dict() for JSON serialization. |
 | `StarCatalog` | `catalog.py` | List of `CatalogEntry` with source tracking. Supports len, iteration, and `to_table()` for astropy Table conversion. |
-| `PatternResult` | `evaluation/metrics.py` | Scored detection result: region coordinates, detection type, anomaly score, significance, novelty, full details dict, cross-matches, hypothesis, debate verdict, consensus score, metadata. `combined_score` property: $0.4 \cdot \text{anomaly} + 0.3 \cdot \text{significance} + 0.2 \cdot \text{novelty} + 0.1 \cdot \text{catalog\_novelty}$. |
+| `Anomaly` | `evaluation/metrics.py` | Single detected anomaly within a sky region. Fields: anomaly_type (lens_arc, overdensity, tidal_feature, comoving_group, etc.), detector name, pixel_x/y, sky_ra/dec (WCS-converted), score (normalized 0-1 across detectors), properties dict (raw_score, area, orientation, peak_snr, n_scales, etc.). Serializable via `to_dict()`. |
+| `PatternResult` | `evaluation/metrics.py` | Scored detection result: region coordinates, detection type, anomaly score, significance, novelty, full details dict, cross-matches, hypothesis, debate verdict, consensus score, metadata, **anomalies list** (per-detection `Anomaly` objects extracted by `_extract_anomalies()`). `combined_score` property: $0.4 \cdot \text{anomaly} + 0.3 \cdot \text{significance} + 0.2 \cdot \text{novelty} + 0.1 \cdot \text{catalog\_novelty}$. |
 
 ---
 
@@ -1072,11 +1073,32 @@ The manager buffers images during detection, periodically retrains the backbone 
 | `multiple_comparison_correction()` | Bonferroni or Benjamini-Hochberg FDR | corrected p-values |
 | `permutation_test()` | Permutation distribution of test statistic | p_value, observed, null distribution |
 
-### 9.2 Cross-Reference
+### 9.2 Per-Anomaly Extraction
+
+`_extract_anomalies()` in `autonomous.py` iterates each detector's output and creates an `Anomaly` object for each spatially-located detection:
+
+| Source | Anomaly Types | Coordinate Source |
+|---|---|---|
+| Lens arcs/rings | `lens_arc`, `lens_ring` | Pixel (WCS-converted to sky) |
+| Distribution overdensities | `overdensity` | Pixel |
+| Wavelet multiscale objects | `multiscale_object` | Pixel |
+| Galaxy tidal features | `tidal_feature` | Pixel |
+| Galaxy merger nuclei | `merger` | Pixel |
+| Classical Hough arcs | `classical_arc` | Pixel |
+| Sersic residual features | `sersic_residual` | Pixel |
+| Kinematic groups/streams/runaways | `comoving_group`, `stellar_stream`, `runaway_star` | Catalog RA/Dec |
+| Transient flux outliers | `flux_outlier` | Catalog RA/Dec |
+| Variability candidates | `variable_star`, `periodic_variable` | Catalog RA/Dec |
+| Stellar population | `blue_straggler`, `red_giant` | Region-level (no coords) |
+
+Scoring: Raw detector scores use incompatible scales (galaxy strength ~100k, overdensity sigma ~1-10, wavelet n_scales ~1-5). Scores are normalized to [0, 1] per detector before global ranking. Each detector is capped at 8 anomalies (`_MAX_PER_DETECTOR`), total capped at 50 per region (`_MAX_ANOMALIES_PER_REGION`). Raw scores preserved in `properties["raw_score"]` for display.
+
+### 9.3 Cross-Reference
+
 
 `CatalogCrossReferencer.cross_reference(ra, dec)` queries SIMBAD, NED, and the Transient Name Server (TNS) for known objects within the search radius. Returns object names, types, and angular separations. Used to distinguish novel detections from known objects. TNS matches identify known transients (supernovae, novae, etc.).
 
-### 9.3 Synthetic Injection
+### 9.4 Synthetic Injection
 
 `SyntheticInjector` provides calibration by injecting known anomalies into real images:
 
@@ -1107,24 +1129,41 @@ Each returns `(modified_image, injection_metadata)` for detection rate measureme
 
 ### 10.2 Discovery Mosaic
 
-`mosaic.py` creates a grid of findings with border colors encoding detection type and novelty:
+`mosaic.py` creates an anomaly-centric mosaic (`create_discovery_mosaic()`) with cutouts centered on the top-scoring individual anomalies:
 
-| Color | Meaning |
-|---|---|
-| Green | Novel (no cross-matches) |
-| Purple | Galaxy features |
-| Teal | Kinematic features |
-| Orange | Transient features |
-| Yellow | Known object (cross-matched) |
-| Gray | Low-confidence |
+- **Overview panel**: full-field image with numbered yellow markers at each anomaly position (WCS-converted)
+- **Cutout panels**: one per anomaly, sorted by normalized score, showing:
+  - ZScale-stretched grayscale image centered on the detection
+  - Cyan crosshair at the detection centroid
+  - Yellow dashed circle sized to the feature (point-source radius or sqrt(area/pi) for extended features)
+  - Label: anomaly number, type, parent finding
+
+**Cutout sizing**: Point sources use 3% of image dimension (clamped [30, 200] px). Extended features (tidal, sersic residual, multiscale) scale to 1.5x the feature's characteristic radius from its area property (clamped [60, 400] px).
+
+**Signal quality filter**: Point-source anomalies are checked for actual signal at their pixel center (2-sigma above local median). Anomalies with no detectable source are skipped in favor of the next ranked anomaly. Extended feature types bypass this filter.
+
+**Extended feature recentering**: Tidal features and sersic residuals often have centroids in faint sky between the bright source and background. The cutout searches within the feature's radius for the brightest pixel and recenters on it when significantly brighter (> 2 sigma), so the visualization shows the source generating the gradient with the feature visible around it.
+
+Falls back to per-finding panels (legacy `_create_finding_mosaic()`) when no per-anomaly data is available.
 
 ### 10.3 Reports
 
 `DiscoveryReport.generate_full_report()` produces:
-- **Text report** (`report.txt`): header, top 20 findings with locations/scores/hypotheses/verdicts, statistics by type, evolution history
-- **JSON report** (`report.json`): machine-readable full data
-- **Mosaic** (`mosaic.png`): visual grid of findings
+- **Markdown report** (`report.md`): findings with per-anomaly tables (type, location, detector, score, properties), catalog cross-references, evidence metrics, anomaly summary by type
+- **JSON report** (`report.json`): machine-readable full data including serialized anomaly list per finding
+- **Mosaic** (`mosaic.png`): anomaly-centric cutout grid
 - **Histogram** (`scores_histogram.png`): score distribution plot
+
+**Per-anomaly table** in each finding:
+
+| Column | Content |
+|---|---|
+| # | Anomaly ID (A1, A2, ...) |
+| Type | Human-readable name (Lens arc, Tidal feat., Co-moving grp, etc.) |
+| Location | RA, Dec (sky) or px (x, y) for pixel-only |
+| Detector | Source detector name |
+| Score | Raw value with units (SNR, sigma, scales) or normalized for arbitrary-scale detectors |
+| Key properties | Compact summary (radius, area, orientation, n_members, period, etc.) |
 
 ---
 
@@ -1279,7 +1318,7 @@ flowchart LR
 
 ## 14. Testing Strategy
 
-387 tests across 30 test files, using real data and real APIs (no mocks):
+419 tests across 30 test files, using real data and real APIs (no mocks):
 
 | Test File | Count | Coverage |
 |---|---|---|
@@ -1292,7 +1331,7 @@ flowchart LR
 | `test_galaxy_detector.py` | 6 | Galaxy tidal features, mergers, color anomalies on synthetic data |
 | `test_genome.py` | 15 | Genome creation, mutation, crossover, distance, serialization, 43 genes, 10 presets |
 | `test_llm_hypothesis.py` | 7 | Hypothesis generation, debate, consensus, provider discovery (real APIs) |
-| `test_pipeline.py` | 25 | RunManager, DiscoveryReport, PipelineConfig, PatternResult, DetectionConfig.from_genome_dict, fitness evaluation, image saving, report generation |
+| `test_pipeline.py` | 66 | RunManager, DiscoveryReport, PipelineConfig, PatternResult, DetectionConfig.from_genome_dict, fitness evaluation, image saving, report generation, Anomaly dataclass, _extract_anomalies, anomaly table formatting, mosaic cutouts |
 | `test_proper_motion.py` | 6 | Co-moving groups, runaway stars, stream detection on synthetic catalogs |
 | `test_sersic.py` | 15 | Sersic b_n approximation, 1D profile, full analyzer (exponential disk, elliptical, noise, residuals, pixel scale) |
 | `test_stellar_population.py` | 10 | CMD analysis, MS/RGB/BS detection, insufficient data, SDSS color fallback |

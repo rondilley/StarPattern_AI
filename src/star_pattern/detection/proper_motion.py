@@ -62,7 +62,13 @@ class ProperMotionAnalyzer:
             results["comoving_groups"] = []
             results["stream_candidates"] = []
             results["runaway_stars"] = []
-            logger.info("Too few proper motion sources for kinematic analysis")
+            n_total = len(catalog.entries) if catalog.entries else 0
+            n_gaia = sum(1 for e in catalog.entries if e.source == "gaia")
+            logger.info(
+                f"Too few proper motion sources for kinematic analysis "
+                f"({len(pm_entries)} with PM out of {n_total} total, "
+                f"{n_gaia} from Gaia)"
+            )
             return results
 
         # Build arrays

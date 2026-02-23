@@ -146,8 +146,19 @@ class StellarPopulationAnalyzer:
 
             # Try Gaia BP-RP
             bp_rp = props.get("bp_rp")
-            # Try SDSS g-r
+            # Try SDSS g-r (pre-computed or compute from individual bands)
             g_r = props.get("g_r")
+            if g_r is None:
+                g_mag = props.get("g")
+                r_mag = props.get("r")
+                if g_mag is not None and r_mag is not None:
+                    try:
+                        g_val = float(g_mag)
+                        r_val = float(r_mag)
+                        if np.isfinite(g_val) and np.isfinite(r_val):
+                            g_r = g_val - r_val
+                    except (ValueError, TypeError):
+                        pass
 
             color = bp_rp if bp_rp is not None else g_r
 

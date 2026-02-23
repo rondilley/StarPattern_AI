@@ -52,13 +52,8 @@ class VariabilityAnalyzer:
                     sources_with_lc.append(entry)
 
         if not sources_with_lc:
-            return {
-                "variability_score": 0.0,
-                "n_analyzed": 0,
-                "variable_candidates": [],
-                "periodic_candidates": [],
-                "transient_candidates": [],
-            }
+            # Fall back to pre-computed ZTF object statistics
+            return self._analyze_from_stats(catalog)
 
         variable_candidates = []
         periodic_candidates = []
@@ -476,3 +471,135 @@ class VariabilityAnalyzer:
             0.5 * chi2_score + 0.3 * period_score + 0.2 * outburst_score,
             0, 1,
         ))
+
+    def _analyze_from_stats(self, catalog: StarCatalog) -> dict[str, Any]:
+        """Analyze variability using pre-computed ZTF object statistics.
+
+        Used as a fallback when individual light curve epochs are unavailable
+        (e.g., the ztf_dr{N} epoch table doesn't exist for recent DRs).
+        Produces the same output schema as the light-curve-based path.
+        """
+        stats_sources = []
+        for entry in catalog.entries:
+            stats = entry.properties.get("ztf_stats")
+            if not stats or not isinstance(stats, dict):
+                continue
+            ngoodobs = stats.get("ngoodobs", 0)
+            if ngoodobs < self.min_epochs:
+                continue
+            stats_sources.append((entry, stats))
+
+        if not stats_sources:
+            return {
+                "variability_score": 0.0,
+                "n_analyzed": 0,
+                "variable_candidates": [],
+                "periodic_candidates": [],
+                "transient_candidates": [],
+            }
+
+        variable_candidates = []
+        transient_candidates = []
+        all_scores = []
+
+        for entry, stats in stats_sources:
+            magrms = stats.get("magrms", 0.0)
+            medmagerr = stats.get("medmagerr", 0.0)
+
+            # Approximate chi2_reduced from magrms and median error
+            if medmagerr > 1e-6:
+                chi2_reduced = (magrms / medmagerr) ** 2
+            else:
+                chi2_reduced = 0.0
+
+            var_index = {
+                "weighted_stdev": magrms,
+                "chi2_reduced": chi2_reduced,
+                "iqr": 0.0,
+                "eta": stats.get("vonneumannratio") if stats.get("vonneumannratio") is not None else 2.0,
+                "amplitude": stats.get("maxmag", 0.0) - stats.get("minmag", 0.0),
+                "median_abs_dev": stats.get("medianabsdev", 0.0),
+                "is_variable": chi2_reduced > self.significance_threshold,
+                "stetsonj": stats.get("stetsonj"),
+                "stetsonk": stats.get("stetsonk"),
+            }
+
+            # No Lomb-Scargle available from stats
+            periodogram = {
+                "best_period": None,
+                "best_power": 0.0,
+                "fap": 1.0,
+                "is_periodic": False,
+                "periods": [],
+                "powers": [],
+            }
+
+            # Approximate outbursts from maxslope: >1.0 mag/day indicates
+            # rapid variability worth flagging for classification
+            pseudo_outbursts: list[dict[str, Any]] = []
+            if stats.get("maxslope", 0.0) > 1.0:
+                pseudo_outbursts.append({
+                    "mjd": 0.0,
+                    "mag": 0.0,
+                    "deviation_sigma": stats["maxslope"],
+                    "type": "brightening",
+                })
+
+            classification = self._classify_variable(
+                var_index, periodogram, pseudo_outbursts
+            )
+
+            source_score = self._source_variability_score(
+                var_index, periodogram, pseudo_outbursts
+            )
+            all_scores.append(source_score)
+
+            filtercode = stats.get("filtercode", "r")
+            source_result = {
+                "source_id": entry.source_id,
+                "ra": entry.ra,
+                "dec": entry.dec,
+                "band": filtercode,
+                "variability_index": var_index,
+                "periodogram": {
+                    "best_period": None,
+                    "best_power": 0.0,
+                    "fap": 1.0,
+                    "is_periodic": False,
+                },
+                "n_outbursts": len(pseudo_outbursts),
+                "classification": classification,
+                "score": source_score,
+            }
+
+            if var_index["is_variable"]:
+                variable_candidates.append(source_result)
+
+            if classification == "transient" or pseudo_outbursts:
+                transient_candidates.append(source_result)
+
+        # Overall variability score
+        if all_scores:
+            n_variable = len(variable_candidates)
+            frac_variable = n_variable / len(stats_sources)
+            top_scores = sorted(all_scores, reverse=True)[:10]
+            mean_top = float(np.mean(top_scores))
+            variability_score = float(np.clip(
+                0.4 * frac_variable + 0.6 * mean_top, 0, 1
+            ))
+        else:
+            variability_score = 0.0
+
+        logger.info(
+            f"Variability analysis (from stats): {len(stats_sources)} sources, "
+            f"{len(variable_candidates)} variable, "
+            f"{len(transient_candidates)} transient candidates"
+        )
+
+        return {
+            "variability_score": variability_score,
+            "n_analyzed": len(stats_sources),
+            "variable_candidates": variable_candidates,
+            "periodic_candidates": [],
+            "transient_candidates": transient_candidates,
+        }

@@ -373,15 +373,16 @@ def overlay_sersic_analysis(
         )
         ax.add_patch(circle)
 
-    # Radial profile inset
+    # Radial profile inset (minimal, top-right corner)
     rp = sersic_result.get("radial_profile", {})
     if rp.get("radii") and rp.get("intensity"):
-        inset = ax.inset_axes([0.6, 0.6, 0.35, 0.35])
-        inset.plot(rp["radii"], rp["intensity"], "c-", linewidth=1)
-        inset.set_xlabel("r (px)", fontsize=6)
-        inset.set_ylabel("I", fontsize=6)
-        inset.tick_params(labelsize=5)
-        inset.set_title("Radial profile", fontsize=7)
+        inset = ax.inset_axes([0.78, 0.78, 0.18, 0.16])
+        inset.plot(rp["radii"], rp["intensity"], "c-", linewidth=0.8)
+        inset.set_xlabel("r", fontsize=5, labelpad=1)
+        inset.set_ylabel("I", fontsize=5, labelpad=1)
+        inset.tick_params(labelsize=4, pad=1)
+        inset.set_title("Radial", fontsize=5, pad=2)
+        inset.patch.set_alpha(0.7)
 
     sersic_n = sersic_result.get("sersic_n", 0)
     r_e = sersic_result.get("r_e", 0)
@@ -422,19 +423,21 @@ def overlay_wavelet_detection(
             markerfacecolor="none",
         )
 
-    # Scale spectrum inset bar chart
+    # Scale spectrum inset bar chart (minimal, top-right corner)
     spectrum = wavelet_result.get("scale_spectrum", [])
     if spectrum:
-        inset = ax.inset_axes([0.6, 0.6, 0.35, 0.35])
+        inset = ax.inset_axes([0.82, 0.80, 0.15, 0.14])
         bar_colors = [
             scale_colors[min(i, len(scale_colors) - 1)]
             for i in range(len(spectrum))
         ]
         inset.bar(range(len(spectrum)), spectrum, color=bar_colors, alpha=0.8)
-        inset.set_xlabel("Scale", fontsize=6)
-        inset.set_ylabel("Power", fontsize=6)
-        inset.tick_params(labelsize=5)
-        inset.set_title("Scale spectrum", fontsize=7)
+        inset.set_xticks(range(len(spectrum)))
+        inset.set_xticklabels([str(i) for i in range(len(spectrum))], fontsize=4)
+        inset.tick_params(axis="y", labelsize=4, pad=1)
+        inset.tick_params(axis="x", pad=1)
+        inset.set_title("Scale", fontsize=5, pad=2)
+        inset.patch.set_alpha(0.7)
 
     score = wavelet_result.get("wavelet_score", 0)
     n_det = len(wavelet_result.get("detections", []))

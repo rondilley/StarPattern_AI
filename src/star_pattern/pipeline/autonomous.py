@@ -28,13 +28,339 @@ from star_pattern.detection.meta_detector import MetaDetector, MetaDetectorConfi
 from star_pattern.detection.compositional import ComposedPipeline, OperationSpec
 from star_pattern.discovery.evolutionary import EvolutionaryDiscovery
 from star_pattern.discovery.genome import DetectionGenome
-from star_pattern.evaluation.metrics import PatternResult
+from star_pattern.evaluation.metrics import Anomaly, PatternResult
 from star_pattern.evaluation.cross_reference import CatalogCrossReferencer
 from star_pattern.pipeline.active_learning import ActiveLearner
 from star_pattern.utils.run_manager import RunManager
 from star_pattern.utils.logging import get_logger
 
 logger = get_logger("pipeline.autonomous")
+
+# Maximum anomalies per region to keep reports manageable
+_MAX_ANOMALIES_PER_REGION = 50
+# Maximum anomalies extracted per detector type before global ranking.
+# Prevents one noisy detector from filling all slots.
+_MAX_PER_DETECTOR = 8
+
+
+def _pixel_to_sky(
+    image: FITSImage | None, px: float, py: float,
+) -> tuple[float | None, float | None]:
+    """Convert pixel coords to RA/Dec via WCS. Returns (None, None) on failure."""
+    if image is None or image.wcs is None:
+        return None, None
+    try:
+        coord = image.wcs.pixel_to_world(px, py)
+        return float(coord.ra.deg), float(coord.dec.deg)
+    except Exception:
+        return None, None
+
+
+def _extract_anomalies(
+    detection: dict[str, Any], image: FITSImage | None,
+) -> list[Anomaly]:
+    """Extract individual anomalies from a detection result dict.
+
+    Iterates each detector's output and creates an Anomaly for each
+    spatially-located detection. Image-based detectors use WCS for
+    sky coordinates; catalog-based detectors already have RA/Dec.
+
+    Returns at most _MAX_ANOMALIES_PER_REGION anomalies, sorted by
+    score descending.
+    """
+    anomalies: list[Anomaly] = []
+
+    # --- Image-based detectors (pixel coords -> WCS) ---
+
+    # Lens arcs
+    lens = detection.get("lens", {})
+    central = lens.get("central_source", {})
+    cx_lens = central.get("x", 128)
+    cy_lens = central.get("y", 128)
+    for arc in lens.get("arcs", []):
+        ax = arc.get("x", cx_lens)
+        ay = arc.get("y", cy_lens)
+        ra, dec = _pixel_to_sky(image, ax, ay)
+        anomalies.append(Anomaly(
+            anomaly_type="lens_arc",
+            detector="lens",
+            pixel_x=ax, pixel_y=ay,
+            sky_ra=ra, sky_dec=dec,
+            score=arc.get("snr", arc.get("strength", 0)),
+            properties={
+                k: arc[k] for k in ("radius", "angle_span", "snr", "strength")
+                if k in arc
+            },
+        ))
+    for ring in lens.get("rings", []):
+        rx = ring.get("x", cx_lens)
+        ry = ring.get("y", cy_lens)
+        ra, dec = _pixel_to_sky(image, rx, ry)
+        anomalies.append(Anomaly(
+            anomaly_type="lens_ring",
+            detector="lens",
+            pixel_x=rx, pixel_y=ry,
+            sky_ra=ra, sky_dec=dec,
+            score=ring.get("completeness", ring.get("strength", 0)),
+            properties={
+                k: ring[k] for k in ("radius", "completeness", "is_complete_ring")
+                if k in ring
+            },
+        ))
+
+    # Distribution overdensities
+    dist = detection.get("distribution", {})
+    for od in dist.get("overdensities", []):
+        ox, oy = od.get("x", 0), od.get("y", 0)
+        ra, dec = _pixel_to_sky(image, ox, oy)
+        anomalies.append(Anomaly(
+            anomaly_type="overdensity",
+            detector="distribution",
+            pixel_x=ox, pixel_y=oy,
+            sky_ra=ra, sky_dec=dec,
+            score=od.get("sigma", od.get("significance", 0)),
+            properties={
+                k: od[k] for k in ("radius_px", "n_sources", "sigma", "significance")
+                if k in od
+            },
+        ))
+
+    # Wavelet multiscale objects (skip individual detections -- too many)
+    wavelet = detection.get("wavelet", {})
+    for ms in wavelet.get("multiscale_objects", []):
+        mx, my = ms.get("x", 0), ms.get("y", 0)
+        ra, dec = _pixel_to_sky(image, mx, my)
+        anomalies.append(Anomaly(
+            anomaly_type="multiscale_object",
+            detector="wavelet",
+            pixel_x=mx, pixel_y=my,
+            sky_ra=ra, sky_dec=dec,
+            score=ms.get("n_scales", ms.get("score", 0)),
+            properties={
+                k: ms[k] for k in ("min_scale", "max_scale", "n_scales")
+                if k in ms
+            },
+        ))
+
+    # Galaxy tidal features (keys: x, y, area, orientation, strength)
+    galaxy = detection.get("galaxy", {})
+    for feat in galaxy.get("tidal_features", []):
+        fx, fy = feat.get("x", 0), feat.get("y", 0)
+        ra, dec = _pixel_to_sky(image, fx, fy)
+        anomalies.append(Anomaly(
+            anomaly_type="tidal_feature",
+            detector="galaxy",
+            pixel_x=fx, pixel_y=fy,
+            sky_ra=ra, sky_dec=dec,
+            score=feat.get("strength", feat.get("snr", 0)),
+            properties={
+                k: feat[k] for k in ("area", "orientation", "strength")
+                if k in feat
+            },
+        ))
+
+    # Galaxy merger nuclei
+    nuclei = galaxy.get("merger_nuclei", [])
+    if nuclei:
+        # Treat as a single anomaly centered on the first nucleus
+        n0 = nuclei[0]
+        nx, ny = n0.get("x", 0), n0.get("y", 0)
+        ra, dec = _pixel_to_sky(image, nx, ny)
+        asymmetry = galaxy.get("asymmetry", 0)
+        anomalies.append(Anomaly(
+            anomaly_type="merger",
+            detector="galaxy",
+            pixel_x=nx, pixel_y=ny,
+            sky_ra=ra, sky_dec=dec,
+            score=asymmetry,
+            properties={"n_nuclei": len(nuclei), "asymmetry": asymmetry},
+        ))
+
+    # Classical Hough arcs (uses center_x/center_y keys)
+    classical = detection.get("classical", {})
+    for arc in classical.get("hough_arcs", []):
+        ax = arc.get("center_x", arc.get("cx", None))
+        ay = arc.get("center_y", arc.get("cy", None))
+        if ax is None or ay is None:
+            continue
+        ra, dec = _pixel_to_sky(image, ax, ay)
+        anomalies.append(Anomaly(
+            anomaly_type="classical_arc",
+            detector="classical",
+            pixel_x=ax, pixel_y=ay,
+            sky_ra=ra, sky_dec=dec,
+            score=arc.get("strength", arc.get("votes", 0)),
+            properties={k: arc[k] for k in ("radius", "strength", "votes") if k in arc},
+        ))
+
+    # Sersic residual features (use peak_snr as score)
+    sersic = detection.get("sersic", {})
+    for feat in sersic.get("residual_features", []):
+        fx, fy = feat.get("x", 0), feat.get("y", 0)
+        ra, dec = _pixel_to_sky(image, fx, fy)
+        anomalies.append(Anomaly(
+            anomaly_type="sersic_residual",
+            detector="sersic",
+            pixel_x=fx, pixel_y=fy,
+            sky_ra=ra, sky_dec=dec,
+            score=abs(feat.get("peak_snr", feat.get("snr", 0))),
+            properties={
+                k: feat[k] for k in ("area_px", "peak_snr", "dist_in_re", "type")
+                if k in feat
+            },
+        ))
+
+    # --- Catalog-based detectors (already have RA/Dec) ---
+
+    kinematic = detection.get("kinematic", {})
+    for grp in kinematic.get("comoving_groups", []):
+        anomalies.append(Anomaly(
+            anomaly_type="comoving_group",
+            detector="kinematic",
+            sky_ra=grp.get("mean_ra", grp.get("center_ra")),
+            sky_dec=grp.get("mean_dec", grp.get("center_dec")),
+            score=grp.get("significance", grp.get("score", 0)),
+            properties={
+                k: grp[k] for k in (
+                    "n_members", "mean_pmra", "mean_pmdec", "pm_dispersion",
+                ) if k in grp
+            },
+        ))
+
+    for stream in kinematic.get("stream_candidates", []):
+        anomalies.append(Anomaly(
+            anomaly_type="stellar_stream",
+            detector="kinematic",
+            sky_ra=stream.get("mean_ra", stream.get("center_ra")),
+            sky_dec=stream.get("mean_dec", stream.get("center_dec")),
+            score=stream.get("significance", stream.get("score", 0)),
+            properties={
+                k: stream[k] for k in (
+                    "n_members", "extent_deg", "mean_pmra", "mean_pmdec",
+                ) if k in stream
+            },
+        ))
+
+    for star in kinematic.get("runaway_stars", []):
+        anomalies.append(Anomaly(
+            anomaly_type="runaway_star",
+            detector="kinematic",
+            sky_ra=star.get("ra"),
+            sky_dec=star.get("dec"),
+            score=star.get("deviation_sigma", star.get("pm_total", 0)),
+            properties={
+                k: star[k] for k in (
+                    "pm_total", "pmra", "pmdec", "deviation_sigma",
+                ) if k in star
+            },
+        ))
+
+    # Transient outliers (catalog-based: ra/dec, no pixel coords)
+    transient = detection.get("transient", {})
+    for out in transient.get("flux_outliers", []):
+        anomalies.append(Anomaly(
+            anomaly_type="flux_outlier",
+            detector="transient",
+            sky_ra=out.get("ra"),
+            sky_dec=out.get("dec"),
+            score=out.get("deviation_sigma", out.get("deviation", 0)),
+            properties={
+                k: out[k] for k in (
+                    "deviation_sigma", "deviation", "type", "source_id",
+                ) if k in out
+            },
+        ))
+
+    # Variability candidates
+    variability = detection.get("variability", {})
+    for vc in variability.get("variable_candidates", []):
+        anomalies.append(Anomaly(
+            anomaly_type="variable_star",
+            detector="variability",
+            sky_ra=vc.get("ra"),
+            sky_dec=vc.get("dec"),
+            score=vc.get("score", vc.get("variability_index", 0)),
+            properties={
+                k: vc[k] for k in (
+                    "classification", "score", "best_period",
+                    "variability_index", "source_id",
+                ) if k in vc
+            },
+        ))
+    for pc in variability.get("periodic_candidates", []):
+        anomalies.append(Anomaly(
+            anomaly_type="periodic_variable",
+            detector="variability",
+            sky_ra=pc.get("ra"),
+            sky_dec=pc.get("dec"),
+            score=pc.get("power", pc.get("score", 0)),
+            properties={
+                k: pc[k] for k in (
+                    "period", "power", "fap", "source_id",
+                ) if k in pc
+            },
+        ))
+
+    # Stellar population candidates
+    # Blue stragglers are under population["blue_stragglers"]["candidates"]
+    # with color/mag/color_offset keys (no ra/dec -- CMD-based, not spatial)
+    # Red giants have only aggregate stats (no individual candidates)
+    # These are recorded as region-level anomalies without spatial coords
+    population = detection.get("population", {})
+    bs_data = population.get("blue_stragglers", {})
+    n_bs = bs_data.get("n_blue_stragglers", 0)
+    if n_bs > 0:
+        anomalies.append(Anomaly(
+            anomaly_type="blue_straggler",
+            detector="population",
+            score=bs_data.get("bs_fraction", 0),
+            properties={
+                "n_blue_stragglers": n_bs,
+                "bs_fraction": bs_data.get("bs_fraction", 0),
+            },
+        ))
+    n_rg = population.get("n_red_giants", 0)
+    if n_rg > 0:
+        rg_data = population.get("red_giants", population)
+        anomalies.append(Anomaly(
+            anomaly_type="red_giant",
+            detector="population",
+            score=rg_data.get("rgb_fraction", 0),
+            properties={
+                "n_red_giants": n_rg,
+                "rgb_fraction": rg_data.get("rgb_fraction", 0),
+            },
+        ))
+
+    # --- Normalize scores and cap per detector ---
+    # Raw scores from different detectors use incompatible scales:
+    #   - galaxy strength: raw pixel flux sums (100k+)
+    #   - overdensity sigma: statistical significance (1-10)
+    #   - wavelet n_scales: integer count (1-5)
+    # Normalize each detector's scores to [0, 1] range so the
+    # global sort produces a diverse set of anomalies.
+    by_detector: dict[str, list[Anomaly]] = {}
+    for a in anomalies:
+        by_detector.setdefault(a.detector, []).append(a)
+
+    normalized: list[Anomaly] = []
+    for det_name, det_anomalies in by_detector.items():
+        # Sort within detector by raw score, take top _MAX_PER_DETECTOR
+        det_anomalies.sort(key=lambda a: a.score, reverse=True)
+        det_anomalies = det_anomalies[:_MAX_PER_DETECTOR]
+
+        # Normalize to [0, 1] within this detector.
+        # Preserve raw score in properties for display purposes.
+        max_score = max((a.score for a in det_anomalies), default=1)
+        if max_score > 0:
+            for a in det_anomalies:
+                a.properties["raw_score"] = a.score
+                a.score = a.score / max_score
+        normalized.extend(det_anomalies)
+
+    # Global sort by normalized score, cap at total limit
+    normalized.sort(key=lambda a: a.score, reverse=True)
+    return normalized[:_MAX_ANOMALIES_PER_REGION]
 
 
 class AutonomousDiscovery:
@@ -381,6 +707,15 @@ class AutonomousDiscovery:
                     details=detection,
                 )
 
+                # Extract per-anomaly findings
+                result.anomalies = _extract_anomalies(detection, image)
+                if result.anomalies:
+                    logger.info(
+                        f"  Extracted {len(result.anomalies)} anomalies "
+                        f"(top: {result.anomalies[0].anomaly_type}, "
+                        f"score={result.anomalies[0].score:.3f})"
+                    )
+
                 # Store local classification in metadata
                 result.metadata["local_classification"] = classification
                 result.hypothesis = classification["rationale"]
@@ -394,6 +729,9 @@ class AutonomousDiscovery:
                 # Cache for summary image generation
                 self._last_classification = classification
                 self._last_evaluation = evaluation
+
+                # Attach FITS image for mosaic rendering (not serialized)
+                result._fits_image = image
 
                 # Save overlay images
                 try:
@@ -1159,7 +1497,8 @@ class AutonomousDiscovery:
         if self._token_tracker:
             metadata["token_usage"] = self._token_tracker.summary()
 
-        paths = report.generate_full_report(self.findings, metadata)
+        images = [getattr(f, '_fits_image', None) for f in self.findings]
+        paths = report.generate_full_report(self.findings, metadata, images=images)
 
         logger.info(f"Reports saved to {self.run_manager.reports_dir}")
         return paths

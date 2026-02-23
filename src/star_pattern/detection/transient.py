@@ -109,6 +109,10 @@ class TransientDetector:
                     continue
 
         if not noise_values:
+            logger.debug(
+                f"No sources with astrometric noise data "
+                f"(checked {len(catalog.entries)} entries)"
+            )
             return outliers
 
         noise_arr = np.array(noise_values)
@@ -146,9 +150,13 @@ class TransientDetector:
 
         for entry in catalog.entries:
             props = entry.properties
-            bp_mag = props.get("phot_bp_mean_mag")
-            rp_mag = props.get("phot_rp_mean_mag")
+            # Gaia BP/RP: check both raw column names and short keys
+            bp_mag = props.get("phot_bp_mean_mag") or props.get("BP")
+            rp_mag = props.get("phot_rp_mean_mag") or props.get("RP")
             g_mag = entry.mag
+
+            color = None
+            mag_val = None
 
             if bp_mag is not None and rp_mag is not None and g_mag is not None:
                 try:
@@ -156,11 +164,30 @@ class TransientDetector:
                     rp = float(rp_mag)
                     g = float(g_mag)
                     if np.isfinite(bp) and np.isfinite(rp) and np.isfinite(g):
-                        colors.append(bp - rp)
-                        mags.append(g)
-                        valid_entries.append(entry)
+                        color = bp - rp
+                        mag_val = g
                 except (ValueError, TypeError):
-                    continue
+                    pass
+
+            # Fallback: SDSS g-r color
+            if color is None and g_mag is not None:
+                g_sdss = props.get("g")
+                r_sdss = props.get("r")
+                if g_sdss is not None and r_sdss is not None:
+                    try:
+                        gv = float(g_sdss)
+                        rv = float(r_sdss)
+                        mg = float(g_mag)
+                        if np.isfinite(gv) and np.isfinite(rv) and np.isfinite(mg):
+                            color = gv - rv
+                            mag_val = mg
+                    except (ValueError, TypeError):
+                        pass
+
+            if color is not None and mag_val is not None:
+                colors.append(color)
+                mags.append(mag_val)
+                valid_entries.append(entry)
 
         if len(colors) < 10:
             return outliers

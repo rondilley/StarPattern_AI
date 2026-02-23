@@ -17,7 +17,7 @@ from star_pattern.utils.retry import retry_with_backoff
 logger = get_logger("data.ztf")
 
 # ZTF data release number for TAP queries
-ZTF_DR = 22
+ZTF_DR = 24
 
 
 class ZTFDataSource(DataSource):
@@ -80,11 +80,17 @@ class ZTFDataSource(DataSource):
             f"Fetching ZTF light curves for ({region.ra:.3f}, {region.dec:.3f})"
         )
 
-        # Query the ZTF objects table for sources in the region
+        # Query the ZTF objects table for sources in the region,
+        # including pre-computed variability statistics.
+        # The objects table has one row per (oid, filtercode), so we
+        # fetch all rows and group by oid below.
         radius_deg = region.radius / 60.0
         obj_query = (
             f"SELECT TOP {max_results} "
-            f"oid, ra, dec, meanmag, nobs "
+            f"oid, ra, dec, meanmag, nobs, filtercode, "
+            f"magrms, medmagerr, medianabsdev, vonneumannratio, "
+            f"stetsonj, stetsonk, skewness, smallkurtosis, "
+            f"maxslope, maxmag, minmag, ngoodobs "
             f"FROM ztf_objects_dr{ZTF_DR} "
             f"WHERE CONTAINS("
             f"POINT('ICRS', ra, dec), "
@@ -103,18 +109,28 @@ class ZTFDataSource(DataSource):
             logger.info("No ZTF sources found in region")
             return StarCatalog(source="ztf")
 
+        # Group rows by oid (objects table has one row per oid+filtercode)
+        oid_rows: dict[str, list] = {}
+        for row in obj_table:
+            oid = str(row["oid"])
+            if oid not in oid_rows:
+                oid_rows[oid] = []
+            oid_rows[oid].append(row)
+
         # Fetch light curves for all sources in one bulk query
         lightcurves = self._fetch_bulk_lightcurves(
             region.ra, region.dec, radius_deg
         )
 
         entries = []
-        for row in obj_table:
-            oid = str(row["oid"])
-            ra_val = float(row["ra"])
-            dec_val = float(row["dec"])
-            mean_mag = float(row["meanmag"]) if row["meanmag"] is not None else None
-            n_obs = int(row["nobs"]) if row["nobs"] is not None else 0
+        n_with_stats = 0
+        for oid, rows in oid_rows.items():
+            # Use first row for positional/mag info
+            first_row = rows[0]
+            ra_val = float(first_row["ra"])
+            dec_val = float(first_row["dec"])
+            mean_mag = float(first_row["meanmag"]) if first_row["meanmag"] is not None else None
+            n_obs = int(first_row["nobs"]) if first_row["nobs"] is not None else 0
 
             # Get light curve data for this source
             source_lc = lightcurves.get(oid, {})
@@ -128,6 +144,21 @@ class ZTFDataSource(DataSource):
                     baseline_days = max(baseline_days, max(times) - min(times))
                     total_epochs += len(band_lc)
 
+            # Extract pre-computed variability stats from the filter
+            # with the most good observations
+            ztf_stats = self._extract_best_stats(rows)
+            if ztf_stats:
+                n_with_stats += 1
+
+            properties: dict[str, Any] = {
+                "ztf_lightcurve": source_lc,
+                "ztf_n_epochs": total_epochs,
+                "ztf_baseline_days": baseline_days,
+                "ztf_n_obs": n_obs,
+            }
+            if ztf_stats:
+                properties["ztf_stats"] = ztf_stats
+
             entries.append(
                 CatalogEntry(
                     ra=ra_val,
@@ -137,19 +168,14 @@ class ZTFDataSource(DataSource):
                     obj_type="unknown",
                     source="ztf",
                     source_id=f"ztf_{oid}",
-                    properties={
-                        "ztf_lightcurve": source_lc,
-                        "ztf_n_epochs": total_epochs,
-                        "ztf_baseline_days": baseline_days,
-                        "ztf_n_obs": n_obs,
-                    },
+                    properties=properties,
                 )
             )
 
         logger.info(
             f"Got {len(entries)} ZTF sources, "
             f"{sum(1 for e in entries if e.properties.get('ztf_n_epochs', 0) > 0)} "
-            f"with light curves"
+            f"with light curves, {n_with_stats} with stats"
         )
         catalog = StarCatalog(entries=entries, source="ztf")
 
@@ -193,7 +219,7 @@ class ZTFDataSource(DataSource):
         try:
             lc_table = Irsa.query_tap(lc_query).to_table()
         except Exception as e:
-            logger.warning(f"ZTF light curve query failed: {e}")
+            logger.debug(f"ZTF light curve query failed (expected for recent DRs): {e}")
             return {}
 
         if lc_table is None or len(lc_table) == 0:
@@ -219,6 +245,54 @@ class ZTFDataSource(DataSource):
             f"Fetched light curves for {len(result)} ZTF sources"
         )
         return result
+
+    @staticmethod
+    def _extract_best_stats(rows: list) -> dict[str, Any] | None:
+        """Extract variability stats from the filter with most good observations.
+
+        The objects table has one row per (oid, filtercode). We pick the row
+        with the highest ngoodobs to get the most reliable statistics.
+        """
+        best_row = None
+        best_ngoodobs = -1
+        for row in rows:
+            ngoodobs = int(row["ngoodobs"]) if row["ngoodobs"] is not None else 0
+            if ngoodobs > best_ngoodobs:
+                best_ngoodobs = ngoodobs
+                best_row = row
+
+        if best_row is None or best_ngoodobs <= 0:
+            return None
+
+        def _safe_float(val: Any) -> float | None:
+            if val is None:
+                return None
+            try:
+                v = float(val)
+                return v if np.isfinite(v) else None
+            except (ValueError, TypeError):
+                return None
+
+        # filtercode mapping: zg=g, zr=r, zi=i (DR objects table uses string codes)
+        filter_map = {"zg": "g", "zr": "r", "zi": "i",
+                      "1": "g", "2": "r", "3": "i"}
+        raw_fc = str(best_row["filtercode"]).strip()
+        filtercode = filter_map.get(raw_fc, raw_fc)
+
+        return {
+            "magrms": _safe_float(best_row["magrms"]) or 0.0,
+            "medmagerr": _safe_float(best_row["medmagerr"]) or 0.0,
+            "medianabsdev": _safe_float(best_row["medianabsdev"]) or 0.0,
+            "vonneumannratio": _safe_float(best_row["vonneumannratio"]),
+            "stetsonj": _safe_float(best_row["stetsonj"]),
+            "stetsonk": _safe_float(best_row["stetsonk"]),
+            "skewness": _safe_float(best_row["skewness"]) or 0.0,
+            "maxslope": _safe_float(best_row["maxslope"]) or 0.0,
+            "maxmag": _safe_float(best_row["maxmag"]) or 0.0,
+            "minmag": _safe_float(best_row["minmag"]) or 0.0,
+            "filtercode": filtercode,
+            "ngoodobs": best_ngoodobs,
+        }
 
     def fetch_lightcurves(
         self,

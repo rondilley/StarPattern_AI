@@ -393,7 +393,9 @@ class SersicAnalyzer:
         positive_mask = smoothed_snr > self.residual_sigma
         labeled_pos, n_pos = ndimage.label(positive_mask)
 
-        for label_idx in range(1, min(n_pos + 1, 20)):
+        # Collect all positive candidates (no iteration cap)
+        pos_candidates = []
+        for label_idx in range(1, n_pos + 1):
             region = labeled_pos == label_idx
             area = int(np.sum(region))
             if area < 5:
@@ -404,7 +406,7 @@ class SersicAnalyzer:
             mean_y = float(np.mean(ys))
             dist_from_center = float(np.sqrt((mean_x - cx) ** 2 + (mean_y - cy) ** 2))
 
-            features.append({
+            pos_candidates.append({
                 "type": "excess_light",
                 "x": mean_x,
                 "y": mean_y,
@@ -414,11 +416,16 @@ class SersicAnalyzer:
                 "dist_in_re": dist_from_center / max(r_e, 1),
             })
 
+        # Keep top 20 by SNR so the most significant features survive
+        pos_candidates.sort(key=lambda f: abs(f["peak_snr"]), reverse=True)
+        features.extend(pos_candidates[:20])
+
         # Negative residuals (deficit = absorption or tidal stripping)
         negative_mask = smoothed_snr < -self.residual_sigma
         labeled_neg, n_neg = ndimage.label(negative_mask)
 
-        for label_idx in range(1, min(n_neg + 1, 10)):
+        neg_candidates = []
+        for label_idx in range(1, n_neg + 1):
             region = labeled_neg == label_idx
             area = int(np.sum(region))
             if area < 5:
@@ -428,7 +435,7 @@ class SersicAnalyzer:
             mean_x = float(np.mean(xs))
             mean_y = float(np.mean(ys))
 
-            features.append({
+            neg_candidates.append({
                 "type": "light_deficit",
                 "x": mean_x,
                 "y": mean_y,
@@ -438,6 +445,10 @@ class SersicAnalyzer:
                     np.sqrt((mean_x - cx) ** 2 + (mean_y - cy) ** 2)
                 ),
             })
+
+        # Keep top 10 by absolute SNR
+        neg_candidates.sort(key=lambda f: abs(f["peak_snr"]), reverse=True)
+        features.extend(neg_candidates[:10])
 
         return features
 

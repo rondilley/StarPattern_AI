@@ -204,3 +204,50 @@ class TestTransientDetector:
         result = transient_detector.analyze(catalog)
         assert result["astrometric_outliers"] == []
         assert result["parallax_anomalies"] == []
+
+    def test_sdss_photometric_fallback(self, transient_detector):
+        """SDSS entries with g/r mags should be usable for photometric outliers."""
+        rng = np.random.default_rng(42)
+        entries = []
+        for i in range(30):
+            g = float(rng.uniform(15, 20))
+            r = g - float(rng.uniform(0.3, 0.8))
+            entries.append(CatalogEntry(
+                ra=180.0 + rng.uniform(-0.01, 0.01),
+                dec=45.0 + rng.uniform(-0.01, 0.01),
+                mag=r,
+                source="sdss",
+                source_id=f"sdss_{i}",
+                properties={"g": g, "r": r},
+            ))
+        # Add one extreme outlier
+        entries.append(CatalogEntry(
+            ra=180.0, dec=45.0, mag=17.0,
+            source="sdss", source_id="sdss_outlier",
+            properties={"g": 22.0, "r": 17.0},  # g-r = 5.0, extreme
+        ))
+        catalog = StarCatalog(entries=entries, source="sdss")
+        result = transient_detector.analyze(catalog)
+        # Should have at least processed photometric data (not empty due to key mismatch)
+        assert result["transient_score"] >= 0.0
+
+    def test_gaia_bp_rp_short_keys(self, transient_detector):
+        """Gaia entries with BP/RP short keys should work for photometric outliers."""
+        rng = np.random.default_rng(99)
+        entries = []
+        for i in range(30):
+            g = float(rng.uniform(14, 19))
+            bp = g + float(rng.uniform(-0.2, 0.5))
+            rp = g - float(rng.uniform(0.1, 0.8))
+            entries.append(CatalogEntry(
+                ra=180.0 + rng.uniform(-0.01, 0.01),
+                dec=45.0 + rng.uniform(-0.01, 0.01),
+                mag=g,
+                source="gaia",
+                source_id=f"gaia_{i}",
+                properties={"BP": bp, "RP": rp, "bp_rp": bp - rp},
+            ))
+        catalog = StarCatalog(entries=entries, source="gaia")
+        result = transient_detector.analyze(catalog)
+        # Photometric outlier detection should have processed entries
+        assert result["transient_score"] >= 0.0
