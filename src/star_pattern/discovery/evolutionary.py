@@ -301,6 +301,44 @@ class EvolutionaryDiscovery:
         )
         return self.best_genome
 
+    def set_learned_weights(self, weights: dict[str, float]) -> None:
+        """Inject active-learning-derived weights into the population.
+
+        Creates 2 genome variants with the learned weights and replaces
+        the worst genomes in the population with them. This connects the
+        active learning feedback loop to the evolutionary search.
+
+        Args:
+            weights: Dict of detector_name -> weight from ActiveLearner.
+        """
+        if not self.population or not weights:
+            return
+
+        # Create 2 variants: one from best genome, one random
+        bases = [self.population[0]]
+        if len(self.population) > 1:
+            bases.append(DetectionGenome(rng=self.rng))
+
+        injected = 0
+        for base in bases:
+            variant = DetectionGenome(genes=base.genes.copy(), rng=self.rng)
+            applied = 0
+            for i, gdef in enumerate(variant.gene_defs):
+                if gdef.name.startswith("weight_"):
+                    det_name = gdef.name[len("weight_"):]
+                    if det_name in weights:
+                        variant.genes[i] = gdef.clip(float(weights[det_name]))
+                        applied += 1
+            if applied > 0 and len(self.population) >= 2:
+                # Replace worst genome
+                self.population[-1 - injected] = variant
+                injected += 1
+
+        if injected > 0:
+            logger.info(
+                f"Injected {injected} active-learning weight variants into population"
+            )
+
     def apply_strategy_to_population(self, strategy: StrategyResult) -> None:
         """Create genome variants from LLM strategy suggestions.
 

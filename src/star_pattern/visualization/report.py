@@ -21,7 +21,7 @@ logger = get_logger("visualization.report")
 _DETECTOR_NAMES = [
     "classical", "source_extractor", "morphology", "anomaly", "lens",
     "distribution", "galaxy", "kinematic", "transient", "sersic",
-    "wavelet", "population", "variability",
+    "wavelet", "population", "variability", "temporal",
 ]
 
 
@@ -50,6 +50,7 @@ _CLASSIFICATION_DISPLAY: dict[str, str] = {
     "statistical_outlier": "Statistical outlier",
     "classical_pattern": "Classical pattern",
     "variable_star": "Variable star candidate",
+    "temporal_change": "Temporal change",
 }
 
 # Common SIMBAD object type codes -> readable descriptions
@@ -173,6 +174,11 @@ _FEATURE_DESCRIPTIONS: dict[str, str] = {
     "periodic candidates": "sources with periodic brightness variation (eclipsing binaries, pulsators)",
     "blue stragglers": "stars bluer/brighter than the main-sequence turnoff (possible mass transfer or merger)",
     "red giants": "evolved stars on the red giant branch",
+    "new sources (temporal)": "sources appearing in later epochs that were absent in the reference",
+    "disappeared sources": "sources present in the reference but absent in later epochs",
+    "brightenings": "sources showing increased brightness across multiple epochs",
+    "fadings": "sources showing decreased brightness across multiple epochs",
+    "moving objects": "sources whose position shifts between epochs (asteroids, high-PM stars)",
 }
 
 
@@ -315,6 +321,11 @@ def _detector_summary_table(findings: list[PatternResult]) -> list[str]:
             "blue stragglers": "population",
             "red giants": "population",
             "sources": "source_extractor",
+            "new sources (temporal)": "temporal",
+            "disappeared sources": "temporal",
+            "brightenings": "temporal",
+            "fadings": "temporal",
+            "moving objects": "temporal",
         }
         for key, count in sub_dets.items():
             det = det_sub_map.get(key)
@@ -361,6 +372,11 @@ _ANOMALY_DISPLAY_NAMES: dict[str, str] = {
     "periodic_variable": "Periodic variable",
     "blue_straggler": "Blue straggler",
     "red_giant": "Red giant",
+    "temporal_new_source": "New source (temporal)",
+    "temporal_disappeared": "Disappeared source",
+    "temporal_brightening": "Brightening",
+    "temporal_fading": "Fading",
+    "temporal_moving": "Moving object",
 }
 
 
@@ -402,6 +418,9 @@ def _format_anomaly_score(a: Anomaly) -> str:
         return f"{raw:.1f} sigma"
     if a.anomaly_type in ("variable_star", "periodic_variable"):
         return f"{raw:.2f}"
+    if a.anomaly_type.startswith("temporal_"):
+        snr = a.properties.get("peak_snr", raw)
+        return f"SNR {snr:.1f}" if snr > 0 else "--"
     if a.score > 0:
         return f"{a.score:.2f}"
     return "--"
@@ -454,6 +473,8 @@ def _format_anomaly_props(a: Anomaly) -> str:
         parts.append(f"{p['n_nuclei']} nuclei")
     if "asymmetry" in p and "n_nuclei" not in p:
         parts.append(f"asym={p['asymmetry']:.2f}")
+    if "n_epochs_detected" in p and a.anomaly_type.startswith("temporal_"):
+        parts.append(f"{p['n_epochs_detected']} epochs")
     return ", ".join(parts) if parts else "--"
 
 
@@ -556,6 +577,10 @@ def _format_finding(
             "transient": ["transient outliers"],
             "variability": ["variable candidates", "periodic candidates"],
             "population": ["blue stragglers", "red giants"],
+            "temporal": [
+                "new sources (temporal)", "disappeared sources",
+                "brightenings", "fadings", "moving objects",
+            ],
         }
         for det_name, score in sorted(
             active_detectors.items(), key=lambda x: x[1], reverse=True,
@@ -619,7 +644,7 @@ def _format_finding(
         f"| SNR | {snr:.1f} | {_interpret_metric('snr', snr)} |"
     )
     lines.append(
-        f"| Agreeing detectors | {n_agree}/12 | "
+        f"| Agreeing detectors | {n_agree}/13 | "
         f"{_interpret_metric('n_agreeing_detectors', n_agree)} |"
     )
     if p_value < 1.0:

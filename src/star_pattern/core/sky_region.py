@@ -18,6 +18,17 @@ from star_pattern.core.catalog import StarCatalog
 
 
 @dataclass
+class EpochImage:
+    """A single-epoch image with timestamp and filter metadata."""
+
+    image: FITSImage
+    mjd: float          # Modified Julian Date
+    band: str           # Filter (g, r, i)
+    source: str = ""    # ztf, mast
+    metadata: dict = field(default_factory=dict)
+
+
+@dataclass
 class SkyRegion:
     """A circular region on the sky."""
 
@@ -79,6 +90,7 @@ class RegionData:
     images: dict[str, FITSImage] = field(default_factory=dict)  # band -> image
     catalogs: dict[str, StarCatalog] = field(default_factory=dict)  # source -> catalog
     metadata: dict[str, Any] = field(default_factory=dict)
+    temporal_images: dict[str, list[EpochImage]] = field(default_factory=dict)  # band -> epochs sorted by MJD
 
     @property
     def primary_image(self) -> FITSImage | None:
@@ -92,3 +104,7 @@ class RegionData:
 
     def has_catalogs(self) -> bool:
         return len(self.catalogs) > 0
+
+    def has_temporal_images(self) -> bool:
+        """Check if any band has multi-epoch images."""
+        return any(len(epochs) >= 2 for epochs in self.temporal_images.values())

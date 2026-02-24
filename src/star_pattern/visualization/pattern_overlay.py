@@ -595,6 +595,192 @@ def overlay_population_cmd(
     return fig
 
 
+def overlay_temporal_analysis(
+    diagnostics: dict[str, Any],
+    temporal_result: dict[str, Any],
+    figsize: tuple[int, int] = (14, 12),
+) -> Figure:
+    """Overlay temporal diagnostic panels: reference, difference, SNR, timeline.
+
+    2x2 layout:
+      [0,0] Reference image (median stack, ZScale)
+      [0,1] Best difference image (epoch with most residuals, diverging cmap)
+      [1,0] SNR map with classified finding annotations
+      [1,1] Epoch timeline (residual counts + peak SNR)
+
+    Args:
+        diagnostics: TemporalDetector.diagnostics dict with reference_image,
+            diff_images, snr_maps, n_residuals_per_epoch.
+        temporal_result: Detection result dict from TemporalDetector.analyze().
+        figsize: Figure size.
+
+    Returns:
+        Matplotlib Figure with 4 diagnostic panels.
+    """
+    from astropy.visualization import ZScaleInterval
+
+    fig, axes = plt.subplots(2, 2, figsize=figsize)
+
+    reference = diagnostics["reference_image"]
+    diff_images = diagnostics["diff_images"]
+    snr_maps = diagnostics["snr_maps"]
+    n_residuals = diagnostics["n_residuals_per_epoch"]
+
+    # -- [0,0] Reference image --
+    ax = axes[0, 0]
+    ref_valid = reference[np.isfinite(reference)]
+    if len(ref_valid) > 0:
+        try:
+            vmin, vmax = ZScaleInterval().get_limits(ref_valid)
+        except Exception:
+            vmin, vmax = np.nanpercentile(ref_valid, [1, 99])
+    else:
+        vmin, vmax = 0, 1
+    ref_cmap = plt.get_cmap("gray_r").copy()
+    ref_cmap.set_bad("0.85")
+    masked_ref = np.ma.array(reference, mask=~np.isfinite(reference))
+    ax.imshow(masked_ref, origin="lower", cmap=ref_cmap, vmin=vmin, vmax=vmax)
+    n_epochs = len(diff_images)
+    ax.set_title(f"Reference (median of {n_epochs} epochs)")
+
+    # -- [0,1] Best difference image (most residuals) --
+    ax = axes[0, 1]
+    if n_residuals:
+        best_idx = int(np.argmax(n_residuals))
+    else:
+        best_idx = 0
+    if diff_images:
+        best_diff = diff_images[best_idx]["data"]
+        valid_diff = best_diff[np.isfinite(best_diff)]
+        vlim = np.percentile(np.abs(valid_diff), 99) if len(valid_diff) > 0 else 1.0
+        vlim = max(vlim, 1e-10)
+        # Use masked array so NaN regions render as background color
+        masked_diff = np.ma.array(best_diff, mask=~np.isfinite(best_diff))
+        cmap = plt.get_cmap("RdBu_r").copy()
+        cmap.set_bad("0.85")  # Light gray for non-overlap regions
+        ax.imshow(
+            masked_diff, origin="lower", cmap=cmap,
+            vmin=-vlim, vmax=vlim,
+        )
+        ax.set_title(
+            f"Difference (MJD={diff_images[best_idx]['mjd']:.1f}, "
+            f"{n_residuals[best_idx]} residuals)"
+        )
+    else:
+        ax.set_title("Difference (no data)")
+
+    # -- [1,0] SNR map with annotated findings --
+    ax = axes[1, 0]
+    if snr_maps:
+        best_snr = snr_maps[best_idx]["data"]
+        snr_valid = best_snr[np.isfinite(best_snr)]
+        snr_vmax = min(float(np.max(snr_valid)), 30) if len(snr_valid) > 0 else 10
+        # Masked array: NaN regions shown as dark gray (non-overlap)
+        masked_snr = np.ma.array(best_snr, mask=~np.isfinite(best_snr))
+        snr_cmap = plt.get_cmap("hot").copy()
+        snr_cmap.set_bad("0.2")  # Dark gray for non-overlap regions
+        ax.imshow(
+            masked_snr, origin="lower", cmap=snr_cmap,
+            vmin=0, vmax=snr_vmax,
+        )
+
+        # Annotate classified findings with color-coded circles
+        type_colors = {
+            "new_sources": "lime",
+            "disappeared": "red",
+            "brightenings": "cyan",
+            "fadings": "orange",
+            "moving_objects": "yellow",
+        }
+        type_labels = {
+            "new_sources": "new",
+            "disappeared": "gone",
+            "brightenings": "bright",
+            "fadings": "fading",
+            "moving_objects": "moving",
+        }
+        plotted_labels = set()
+        for finding_type, color in type_colors.items():
+            for finding in temporal_result.get(finding_type, []):
+                cx = finding.get("cx")
+                cy = finding.get("cy")
+                if cx is None or cy is None:
+                    continue
+                label = type_labels[finding_type] if finding_type not in plotted_labels else None
+                plotted_labels.add(finding_type)
+                circle = Circle(
+                    (cx, cy), 8,
+                    fill=False, edgecolor=color, linewidth=1.5,
+                )
+                ax.add_patch(circle)
+                snr_val = finding.get("peak_snr", 0)
+                ax.text(
+                    cx, cy + 12, f"{snr_val:.1f}",
+                    color=color, fontsize=6, ha="center",
+                )
+                if label:
+                    ax.text(
+                        cx, cy - 12, label,
+                        color=color, fontsize=5, ha="center",
+                    )
+
+        ax.set_title("SNR map (annotated findings)")
+    else:
+        ax.set_title("SNR map (no data)")
+
+    # -- [1,1] Epoch timeline --
+    ax = axes[1, 1]
+    if diff_images and n_residuals:
+        mjds = [d["mjd"] for d in diff_images]
+        ax.bar(
+            range(len(mjds)), n_residuals,
+            color="#3498db", alpha=0.7, label="Residuals",
+        )
+        ax.set_xlabel("Epoch index")
+        ax.set_ylabel("Residual count", color="#3498db")
+        ax.tick_params(axis="y", labelcolor="#3498db")
+
+        # Twin axis: peak SNR per epoch
+        ax2 = ax.twinx()
+        peak_snrs = []
+        for snr_entry in snr_maps:
+            snr_data = snr_entry["data"]
+            snr_finite = snr_data[np.isfinite(snr_data)]
+            peak_snrs.append(float(np.max(snr_finite)) if len(snr_finite) > 0 else 0)
+        ax2.plot(
+            range(len(mjds)), peak_snrs,
+            "o-", color="#e74c3c", linewidth=1.5, markersize=4,
+            label="Peak SNR",
+        )
+        ax2.set_ylabel("Peak SNR", color="#e74c3c")
+        ax2.tick_params(axis="y", labelcolor="#e74c3c")
+
+        # MJD tick labels
+        if len(mjds) <= 12:
+            ax.set_xticks(range(len(mjds)))
+            ax.set_xticklabels([f"{m:.0f}" for m in mjds], fontsize=6, rotation=45)
+            ax.set_xlabel("MJD")
+
+        ax.set_title("Epoch timeline")
+    else:
+        ax.set_title("Epoch timeline (no data)")
+
+    # Suptitle with summary counts
+    n_new = temporal_result.get("n_new_sources", 0)
+    n_gone = temporal_result.get("n_disappeared", 0)
+    n_bright = temporal_result.get("n_brightenings", 0)
+    n_fading = temporal_result.get("n_fadings", 0)
+    n_moving = temporal_result.get("n_moving", 0)
+    score = temporal_result.get("temporal_score", 0)
+    fig.suptitle(
+        f"Temporal: {n_new} new, {n_gone} gone, {n_bright} bright, "
+        f"{n_fading} fading, {n_moving} moving -- score={score:.3f}",
+        fontsize=12, fontweight="bold",
+    )
+    plt.tight_layout(rect=[0, 0, 1, 0.95])
+    return fig
+
+
 def overlay_anomaly_scores(
     image: FITSImage,
     detection: dict[str, Any],
@@ -634,7 +820,7 @@ def _get_detector_scores(
     detector_names = [
         "classical", "morphology", "anomaly", "lens", "distribution",
         "galaxy", "kinematic", "transient", "sersic", "wavelet",
-        "population", "variability",
+        "population", "variability", "temporal",
     ]
     score_keys = {
         "classical": ("classical", "gabor_score"),
@@ -649,6 +835,7 @@ def _get_detector_scores(
         "wavelet": ("wavelet", "wavelet_score"),
         "population": ("population", "population_score"),
         "variability": ("variability", "variability_score"),
+        "temporal": ("temporal", "temporal_score"),
     }
     det_scores = []
     for name in detector_names:

@@ -61,22 +61,33 @@ class DetectionConfig:
     variability_period_min: float = 0.1    # days
     variability_period_max: float = 500.0  # days
 
+    # Temporal (multi-epoch image differencing)
+    temporal_snr_threshold: float = 5.0
+    temporal_min_epochs: int = 2
+    temporal_max_baseline: float = 2000.0
+    temporal_min_baseline: float = 1.0
+    temporal_dipole_max_sep: float = 5.0
+
     ensemble_weights: dict[str, float] = field(
         default_factory=lambda: {
-            "classical": 0.09,
-            "morphology": 0.09,
+            "classical": 0.08,
+            "morphology": 0.08,
             "anomaly": 0.09,
-            "lens": 0.09,
-            "distribution": 0.11,
-            "galaxy": 0.09,
-            "kinematic": 0.09,
+            "lens": 0.08,
+            "distribution": 0.10,
+            "galaxy": 0.08,
+            "kinematic": 0.08,
             "transient": 0.04,
             "sersic": 0.07,
-            "wavelet": 0.09,
+            "wavelet": 0.08,
             "population": 0.06,
-            "variability": 0.09,
+            "variability": 0.08,
+            "temporal": 0.08,
         }
     )
+
+    # Detector enable/disable gates (evolution can turn detectors off)
+    enabled_detectors: dict[str, bool] = field(default_factory=dict)
 
     @classmethod
     def from_genome_dict(cls, d: dict[str, Any]) -> DetectionConfig:
@@ -96,6 +107,7 @@ class DetectionConfig:
         wavelet = d.get("wavelet", {})
         population = d.get("population", {})
         variability = d.get("variability", {})
+        temporal = d.get("temporal", {})
         return cls(
             source_extraction_threshold=se.get("threshold", 3.0),
             gabor_frequencies=gabor.get("frequencies", [0.05, 0.1, 0.2, 0.4]),
@@ -120,7 +132,13 @@ class DetectionConfig:
             variability_significance=variability.get("significance", 3.0),
             variability_period_min=variability.get("period_min", 0.1),
             variability_period_max=variability.get("period_max", 500.0),
+            temporal_snr_threshold=temporal.get("snr_threshold", 5.0),
+            temporal_min_epochs=temporal.get("min_epochs", 2),
+            temporal_max_baseline=temporal.get("max_baseline", 2000.0),
+            temporal_min_baseline=temporal.get("min_baseline", 1.0),
+            temporal_dipole_max_sep=temporal.get("dipole_max_sep", 5.0),
             ensemble_weights=d.get("ensemble_weights", {}),
+            enabled_detectors=d.get("enabled_detectors", {}),
         )
 
 
@@ -223,6 +241,20 @@ class CompositionalConfig:
 
 
 @dataclass
+class TemporalConfig:
+    """Configuration for temporal (multi-epoch) image differencing."""
+
+    enabled: bool = True
+    max_epochs: int = 10
+    min_baseline_days: float = 1.0
+    max_baseline_days: float = 2000.0
+    snr_threshold: float = 5.0
+    min_epochs: int = 2
+    dipole_max_sep_arcsec: float = 5.0
+    fetch_interval: int = 1  # Fetch temporal images every N cycles
+
+
+@dataclass
 class PipelineConfig:
     """Top-level pipeline configuration."""
 
@@ -235,14 +267,15 @@ class PipelineConfig:
     meta: MetaDetectorConfig = field(default_factory=MetaDetectorConfig)
     representation: RepresentationConfig = field(default_factory=RepresentationConfig)
     compositional: CompositionalConfig = field(default_factory=CompositionalConfig)
+    temporal: TemporalConfig = field(default_factory=TemporalConfig)
     output_dir: str = "output/runs"
     checkpoint_interval: int = 10
     max_cycles: int = 1000
     batch_size: int = 10
-    evolve_interval: int = 25
-    evolve_generations: int = 5
-    evolve_population: int = 15
-    evolve_max_seconds: int = 600
+    evolve_interval: int = 10
+    evolve_generations: int = 10
+    evolve_population: int = 30
+    evolve_max_seconds: int = 900
     evolve_workers: int = 4
 
     @classmethod
@@ -265,6 +298,7 @@ class PipelineConfig:
         meta = MetaDetectorConfig(**d.get("meta", {}))
         representation = RepresentationConfig(**d.get("representation", {}))
         compositional = CompositionalConfig(**d.get("compositional", {}))
+        temporal = TemporalConfig(**d.get("temporal", {}))
         pipeline = d.get("pipeline", {})
         return cls(
             data=data,
@@ -276,6 +310,7 @@ class PipelineConfig:
             meta=meta,
             representation=representation,
             compositional=compositional,
+            temporal=temporal,
             output_dir=pipeline.get("output_dir", "output/runs"),
             checkpoint_interval=pipeline.get("checkpoint_interval", 10),
             max_cycles=pipeline.get("max_cycles", 1000),

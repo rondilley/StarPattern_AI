@@ -42,14 +42,16 @@ class DataCache:
         self._index_file.write_text(json.dumps(self._index, indent=2))
 
     @staticmethod
-    def _make_key(source: str, ra: float, dec: float, radius: float, band: str = "") -> str:
+    def _make_key(source: str, ra: float, dec: float, radius: float, band: str = "", epoch: str = "") -> str:
         """Create a unique cache key."""
         raw = f"{source}:{ra:.6f}:{dec:.6f}:{radius:.4f}:{band}"
+        if epoch:
+            raw += f":{epoch}"
         return hashlib.sha256(raw.encode()).hexdigest()[:16]
 
-    def get_path(self, source: str, ra: float, dec: float, radius: float, band: str = "") -> Path | None:
+    def get_path(self, source: str, ra: float, dec: float, radius: float, band: str = "", epoch: str = "") -> Path | None:
         """Get cached file path if it exists."""
-        key = self._make_key(source, ra, dec, radius, band)
+        key = self._make_key(source, ra, dec, radius, band, epoch=epoch)
         if key in self._index:
             path = Path(self._index[key]["path"])
             if path.exists():
@@ -68,10 +70,11 @@ class DataCache:
         radius: float,
         path: Path,
         band: str = "",
+        epoch: str = "",
         metadata: dict[str, Any] | None = None,
     ) -> None:
         """Register a file in the cache."""
-        key = self._make_key(source, ra, dec, radius, band)
+        key = self._make_key(source, ra, dec, radius, band, epoch=epoch)
         self._index[key] = {
             "path": str(path),
             "source": source,
@@ -85,10 +88,10 @@ class DataCache:
         logger.debug(f"Cached: {key} -> {path}")
 
     def cache_path_for(
-        self, source: str, ra: float, dec: float, radius: float, band: str = "", ext: str = ".fits"
+        self, source: str, ra: float, dec: float, radius: float, band: str = "", epoch: str = "", ext: str = ".fits"
     ) -> Path:
         """Generate a cache file path (does not create the file)."""
-        key = self._make_key(source, ra, dec, radius, band)
+        key = self._make_key(source, ra, dec, radius, band, epoch=epoch)
         return self.cache_dir / f"{source}_{key}{ext}"
 
     # --- Catalog caching ---

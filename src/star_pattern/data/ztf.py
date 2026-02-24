@@ -1,13 +1,16 @@
-"""Zwicky Transient Facility light curve data via IRSA TAP."""
+"""Zwicky Transient Facility light curve data and epoch images via IRSA."""
 
 from __future__ import annotations
 
+import csv
+import io
 from typing import Any
 
 import numpy as np
+import requests
 
 from star_pattern.core.fits_handler import FITSImage
-from star_pattern.core.sky_region import SkyRegion
+from star_pattern.core.sky_region import SkyRegion, EpochImage
 from star_pattern.core.catalog import CatalogEntry, StarCatalog
 from star_pattern.data.base import DataSource
 from star_pattern.data.cache import DataCache
@@ -316,6 +319,188 @@ class ZTFDataSource(DataSource):
                 "n_epochs": total_epochs,
             })
         return results
+
+    @retry_with_backoff(max_retries=2, base_delay=3.0)
+    def fetch_epoch_images(
+        self,
+        region: SkyRegion,
+        bands: list[str] | None = None,
+        max_epochs: int = 10,
+        min_baseline_days: float = 1.0,
+        max_baseline_days: float = 2000.0,
+    ) -> dict[str, list[EpochImage]]:
+        """Fetch ZTF science image cutouts at multiple epochs.
+
+        Queries the IRSA Image Browser Engine (IBE) for ZTF science images
+        covering the region, then downloads cutouts for each epoch.
+
+        Args:
+            region: Sky region to query.
+            bands: Filters to fetch (default: ["r"]). ZTF codes: zg=g, zr=r, zi=i.
+            max_epochs: Maximum number of epochs per band.
+            min_baseline_days: Minimum time between first and last epoch.
+            max_baseline_days: Maximum time between first and last epoch.
+
+        Returns:
+            Dict mapping band -> list of EpochImage sorted by MJD.
+        """
+        bands = bands or ["r"]
+        ibe_filter_map = {"g": "zg", "r": "zr", "i": "zi"}
+        result: dict[str, list[EpochImage]] = {}
+
+        radius_deg = region.radius / 60.0
+        cutout_arcsec = min(2 * region.radius * 60, 300)
+
+        for band in bands:
+            ztf_filter = ibe_filter_map.get(band, band)
+
+            # Search IRSA IBE for science images
+            search_url = (
+                f"https://irsa.ipac.caltech.edu/ibe/search/ztf/products/sci"
+                f"?POS={region.ra},{region.dec}&SIZE={radius_deg}"
+                f"&ct=csv"
+            )
+            try:
+                resp = requests.get(search_url, timeout=90)
+                resp.raise_for_status()
+            except requests.RequestException as e:
+                logger.warning(f"ZTF IBE search failed for band {band}: {e}")
+                continue
+
+            # Parse CSV response
+            rows = list(csv.DictReader(io.StringIO(resp.text)))
+            if not rows:
+                logger.debug(f"No ZTF science images found for band {band}")
+                continue
+
+            # Filter by band
+            band_rows = [
+                r for r in rows
+                if r.get("filtercode", "").strip() == ztf_filter
+            ]
+            if not band_rows:
+                logger.debug(f"No ZTF images in filter {ztf_filter}")
+                continue
+
+            # Parse observation dates and sort by time
+            for r in band_rows:
+                try:
+                    r["_obsjd"] = float(r.get("obsjd", 0))
+                except (ValueError, TypeError):
+                    r["_obsjd"] = 0
+            band_rows.sort(key=lambda r: r["_obsjd"])
+
+            # Filter by baseline constraints
+            if len(band_rows) >= 2:
+                t_first = band_rows[0]["_obsjd"]
+                t_last = band_rows[-1]["_obsjd"]
+                baseline = t_last - t_first
+                if baseline < min_baseline_days:
+                    logger.debug(
+                        f"ZTF baseline too short for band {band}: "
+                        f"{baseline:.1f} < {min_baseline_days} days"
+                    )
+                    continue
+
+                # Trim to max baseline
+                if baseline > max_baseline_days:
+                    cutoff = t_first + max_baseline_days
+                    band_rows = [r for r in band_rows if r["_obsjd"] <= cutoff]
+
+            # Select up to max_epochs, spread across the baseline
+            if len(band_rows) > max_epochs:
+                indices = np.linspace(0, len(band_rows) - 1, max_epochs, dtype=int)
+                band_rows = [band_rows[i] for i in indices]
+
+            # Download cutouts
+            epoch_images: list[EpochImage] = []
+            for row in band_rows:
+                filefracday = row.get("filefracday", "").strip()
+                field_id = row.get("field", "").strip()
+                ccdid = row.get("ccdid", "").strip()
+                qid = row.get("qid", "").strip()
+                obsjd = row["_obsjd"]
+
+                if not all([filefracday, field_id, ccdid, qid]):
+                    continue
+
+                # Check cache
+                epoch_key = filefracday
+                cached = self._cache.get_path(
+                    "ztf_epoch", region.ra, region.dec, region.radius,
+                    band=band, epoch=epoch_key,
+                )
+                if cached is not None:
+                    try:
+                        fits_img = FITSImage.from_file(str(cached))
+                        epoch_images.append(EpochImage(
+                            image=fits_img,
+                            mjd=obsjd - 2400000.5,  # JD to MJD
+                            band=band,
+                            source="ztf",
+                            metadata={"filefracday": filefracday},
+                        ))
+                        continue
+                    except Exception:
+                        pass
+
+                # Build download path
+                # ZTF IBE path: /{year}/{mmdd}/{fracday}/ztf_{filefracday}_{field}_{filtercode}_c{ccdid}_o_q{qid}_sciimg.fits
+                # Directory uses the fractional day only (chars 8+), not the full filefracday
+                year = filefracday[:4]
+                mmdd = filefracday[4:8]
+                fracday = filefracday[8:]
+                sci_path = (
+                    f"{year}/{mmdd}/{fracday}/"
+                    f"ztf_{filefracday}_{int(field_id):06d}_{ztf_filter}"
+                    f"_c{int(ccdid):02d}_o_q{int(qid)}_sciimg.fits"
+                )
+                cutout_url = (
+                    f"https://irsa.ipac.caltech.edu/ibe/data/ztf/products/sci/{sci_path}"
+                    f"?center={region.ra},{region.dec}"
+                    f"&size={cutout_arcsec}arcsec&gzip=false"
+                )
+
+                try:
+                    img_resp = requests.get(cutout_url, timeout=60)
+                    img_resp.raise_for_status()
+                except requests.RequestException as e:
+                    logger.debug(f"ZTF cutout download failed: {e}")
+                    continue
+
+                # Save to cache
+                cache_path = self._cache.cache_path_for(
+                    "ztf_epoch", region.ra, region.dec, region.radius,
+                    band=band, epoch=epoch_key,
+                )
+                try:
+                    cache_path.write_bytes(img_resp.content)
+                    self._cache.put(
+                        "ztf_epoch", region.ra, region.dec, region.radius,
+                        cache_path, band=band, epoch=epoch_key,
+                        metadata={"obsjd": obsjd, "filefracday": filefracday},
+                    )
+                    fits_img = FITSImage.from_file(str(cache_path))
+                    epoch_images.append(EpochImage(
+                        image=fits_img,
+                        mjd=obsjd - 2400000.5,
+                        band=band,
+                        source="ztf",
+                        metadata={"filefracday": filefracday},
+                    ))
+                except Exception as e:
+                    logger.debug(f"ZTF epoch image load failed: {e}")
+                    continue
+
+            if epoch_images:
+                epoch_images.sort(key=lambda e: e.mjd)
+                result[band] = epoch_images
+                logger.info(
+                    f"Fetched {len(epoch_images)} ZTF epoch images in band {band} "
+                    f"(baseline: {epoch_images[-1].mjd - epoch_images[0].mjd:.1f} days)"
+                )
+
+        return result
 
     def is_available(self) -> bool:
         """Check if IRSA TAP is importable."""

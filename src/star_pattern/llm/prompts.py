@@ -165,6 +165,12 @@ STRATEGY_PROMPT = """You are a senior astronomer reviewing an automated detectio
 PIPELINE STATUS:
 {summary}
 
+AVAILABLE DETECTORS: classical, morphology, anomaly, lens, distribution, galaxy, kinematic, transient, sersic, wavelet, population, variability, temporal
+
+AVAILABLE PIPELINE PRIMITIVES: source_extraction, gabor_filter, morphology_analysis, anomaly_detection, lens_detection, distribution_analysis, galaxy_detection, wavelet_analysis, sersic_fitting, threshold_filter
+
+GOAL: Discover NEW types of visual patterns in astronomical images. Avoid repeatedly optimizing the same detectors. Consider disabling detectors that consistently produce noise and enabling ones that have been underused.
+
 Based on these results, provide strategic adjustments in JSON:
 ```json
 {{
@@ -174,6 +180,9 @@ Based on these results, provide strategic adjustments in JSON:
   "weight_adjustments": {{
     "detector_name": 0.0
   }},
+  "disable_detectors": ["detectors producing only noise"],
+  "enable_detectors": ["detectors worth re-enabling"],
+  "pipeline_suggestion": "describe a detection approach to try next",
   "focus_regions": [
     {{"ra": 0, "dec": 0, "reason": "..."}}
   ],
@@ -182,7 +191,7 @@ Based on these results, provide strategic adjustments in JSON:
 }}
 ```
 
-Be concise. Only suggest changes that would meaningfully improve results."""
+Be concise. Focus on discovering NEW pattern types, not re-tuning existing ones."""
 
 BATCH_REVIEW_PROMPT = """You are an expert astronomer. Review these flagged astronomical detections and provide a brief verdict for each.
 

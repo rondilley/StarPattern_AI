@@ -85,6 +85,13 @@ _FEATURE_SCHEMA: list[tuple[str, str, float]] = [
     ("variability", "n_variables", 0),
     ("variability", "n_periodic", 0),
     ("variability", "n_transients", 0),
+    # Temporal (6)
+    ("temporal", "temporal_score", 0),
+    ("temporal", "n_new_sources", 0),
+    ("temporal", "n_disappeared", 0),
+    ("temporal", "n_brightenings", 0),
+    ("temporal", "n_moving", 0),
+    ("temporal", "baseline_days", 0),
     # Anomaly detector (1)
     ("anomaly", "anomaly_score", 0),
     # Ensemble-level (1)

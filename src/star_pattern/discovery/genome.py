@@ -98,6 +98,19 @@ GENE_DEFINITIONS: list[GeneRange] = [
     GeneRange("weight_wavelet", 0.0, 1.0, "float", "Weight for wavelet analysis"),
     GeneRange("weight_population", 0.0, 1.0, "float", "Weight for CMD/population analysis"),
     GeneRange("weight_variability", 0.0, 1.0, "float", "Weight for variability detection"),
+    # Detector enable/disable gates (>= 0.5 = enabled)
+    GeneRange("enable_classical", 0, 1, "bool", "Enable classical detector"),
+    GeneRange("enable_morphology", 0, 1, "bool", "Enable morphology detector"),
+    GeneRange("enable_anomaly", 0, 1, "bool", "Enable anomaly detector"),
+    GeneRange("enable_lens", 0, 1, "bool", "Enable lens detector"),
+    GeneRange("enable_distribution", 0, 1, "bool", "Enable distribution detector"),
+    GeneRange("enable_galaxy", 0, 1, "bool", "Enable galaxy detector"),
+    GeneRange("enable_kinematic", 0, 1, "bool", "Enable kinematic detector"),
+    GeneRange("enable_transient", 0, 1, "bool", "Enable transient detector"),
+    GeneRange("enable_sersic", 0, 1, "bool", "Enable sersic detector"),
+    GeneRange("enable_wavelet", 0, 1, "bool", "Enable wavelet detector"),
+    GeneRange("enable_population", 0, 1, "bool", "Enable population detector"),
+    GeneRange("enable_variability", 0, 1, "bool", "Enable variability detector"),
     # Meta-detector (Phase 2)
     GeneRange("meta_blend_weight", 0.0, 1.0, "float", "Meta-detector blend weight (0=linear, 1=learned)"),
     GeneRange("meta_gbm_depth", 2, 6, "int", "Meta-detector GBM max depth"),
@@ -107,6 +120,13 @@ GENE_DEFINITIONS: list[GeneRange] = [
     GeneRange("repr_weight", 0.0, 1.0, "float", "Embedding representation weight"),
     # Compositional detection (Phase 4)
     GeneRange("composed_weight", 0.0, 1.0, "float", "Composed pipeline score weight"),
+    # Temporal detection (Phase 5)
+    GeneRange("temporal_snr_threshold", 3.0, 10.0, "float", "Temporal residual SNR threshold"),
+    GeneRange("temporal_min_epochs", 2, 10, "int", "Min epochs for temporal analysis"),
+    GeneRange("temporal_max_baseline", 30, 2000, "float", "Max baseline in days"),
+    GeneRange("temporal_min_baseline", 1, 30, "float", "Min baseline in days"),
+    GeneRange("temporal_dipole_max_sep", 1.0, 10.0, "float", "Max dipole separation in arcsec"),
+    GeneRange("weight_temporal", 0.0, 1.0, "float", "Weight for temporal detection"),
 ]
 
 
@@ -159,15 +179,34 @@ class DetectionGenome:
     def to_detection_config(self) -> dict[str, Any]:
         """Convert genome to detection configuration dict."""
         g = self.get
-        # Normalize all 11 ensemble weights together
-        w_sum = (
-            g("weight_classical") + g("weight_morphology")
-            + g("weight_anomaly") + g("weight_distribution")
-            + g("weight_galaxy") + g("weight_kinematic")
-            + g("weight_transient") + g("weight_sersic")
-            + g("weight_wavelet") + g("weight_population")
-            + g("weight_variability")
-        )
+
+        # Gate weights by enable genes: disabled detectors get weight=0.
+        # Note: "lens" has an enable gene but no weight gene -- its score
+        # contributes through the anomaly detector and ensemble scoring.
+        _WEIGHT_NAMES = [
+            "classical", "morphology", "anomaly", "distribution",
+            "galaxy", "kinematic", "transient", "sersic", "wavelet",
+            "population", "variability",
+        ]
+        _ENABLE_NAMES = [
+            "classical", "morphology", "anomaly", "lens", "distribution",
+            "galaxy", "kinematic", "transient", "sersic", "wavelet",
+            "population", "variability",
+        ]
+        enabled_detectors = {}
+        for name in _ENABLE_NAMES:
+            enable_val = self._safe_get(f"enable_{name}", 1.0)
+            enabled_detectors[name] = enable_val >= 0.5
+
+        raw_weights = {}
+        for name in _WEIGHT_NAMES:
+            is_enabled = enabled_detectors.get(name, True)
+            raw_weights[name] = g(f"weight_{name}") if is_enabled else 0.0
+
+        # Temporal has no enable gene (always on when temporal images exist)
+        raw_weights["temporal"] = self._safe_get("weight_temporal", 0.0)
+
+        w_sum = sum(raw_weights.values())
         if w_sum < 1e-10:
             w_sum = 1.0
 
@@ -236,18 +275,10 @@ class DetectionGenome:
                 "period_max": g("variability_period_max"),
             },
             "ensemble_weights": {
-                "classical": g("weight_classical") / w_sum,
-                "morphology": g("weight_morphology") / w_sum,
-                "anomaly": g("weight_anomaly") / w_sum,
-                "distribution": g("weight_distribution") / w_sum,
-                "galaxy": g("weight_galaxy") / w_sum,
-                "kinematic": g("weight_kinematic") / w_sum,
-                "transient": g("weight_transient") / w_sum,
-                "sersic": g("weight_sersic") / w_sum,
-                "wavelet": g("weight_wavelet") / w_sum,
-                "population": g("weight_population") / w_sum,
-                "variability": g("weight_variability") / w_sum,
+                name: raw_weights[name] / w_sum
+                for name in list(_WEIGHT_NAMES) + ["temporal"]
             },
+            "enabled_detectors": enabled_detectors,
             "meta": {
                 "blend_weight": self._safe_get("meta_blend_weight", 0.0),
                 "gbm_max_depth": int(self._safe_get("meta_gbm_depth", 3)),
@@ -259,6 +290,13 @@ class DetectionGenome:
             },
             "compositional": {
                 "weight": self._safe_get("composed_weight", 0.0),
+            },
+            "temporal": {
+                "snr_threshold": self._safe_get("temporal_snr_threshold", 5.0),
+                "min_epochs": int(self._safe_get("temporal_min_epochs", 2)),
+                "max_baseline": self._safe_get("temporal_max_baseline", 2000.0),
+                "min_baseline": self._safe_get("temporal_min_baseline", 1.0),
+                "dipole_max_sep": self._safe_get("temporal_dipole_max_sep", 5.0),
             },
         }
 

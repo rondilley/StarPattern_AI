@@ -26,6 +26,7 @@ DETECTOR_TO_CLASS: dict[str, str] = {
     "anomaly": "statistical_outlier",
     "classical": "classical_pattern",
     "variability": "variable_star",
+    "temporal": "temporal_change",
 }
 
 # Follow-up observation templates per classification
@@ -90,6 +91,11 @@ FOLLOW_UP_TEMPLATES: dict[str, list[str]] = {
         "Spectroscopic classification of variable type",
         "Cross-match with AAVSO and GCVS variable star catalogs",
     ],
+    "temporal_change": [
+        "Multi-epoch imaging to track evolution of change",
+        "Spectroscopy to classify nature of the transient/variable",
+        "Cross-reference with known transient databases (TNS, ATel)",
+    ],
 }
 
 # Rationale templates for each detector type
@@ -141,6 +147,10 @@ _RATIONALE_TEMPLATES: dict[str, str] = {
     "variability": (
         "Detection dominated by time-domain variability signal. "
         "Variability score {score:.2f} indicates {strength} photometric variability."
+    ),
+    "temporal": (
+        "Detection dominated by multi-epoch image differencing. "
+        "Temporal score {score:.2f} indicates {strength} change between epochs."
     ),
 }
 
@@ -239,6 +249,7 @@ class LocalClassifier:
             "anomaly": ("anomaly", "anomaly_score"),
             "classical": ("classical", "classical_score"),
             "variability": ("variability", "variability_score"),
+            "temporal": ("temporal", "temporal_score"),
         }
 
         for detector, (section, key) in score_keys.items():

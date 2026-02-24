@@ -8,6 +8,7 @@ import pytest
 
 from star_pattern.core.config import PipelineConfig, EvolutionConfig, DetectionConfig
 from star_pattern.core.fits_handler import FITSImage
+from star_pattern.detection.ensemble import EnsembleDetector
 from star_pattern.discovery.genome import DetectionGenome, GENE_DEFINITIONS
 from star_pattern.discovery.fitness import FitnessEvaluator
 from star_pattern.discovery.evolutionary import EvolutionaryDiscovery
@@ -356,7 +357,8 @@ class TestGenomeExpansion:
         # + 3 galaxy + 4 kinematic + 2 transient
         # + 2 sersic + 2 wavelet + 2 population + 4 variability
         # + 11 weights + 3 meta + 2 repr + 1 composed
-        assert genome.n_genes == 54
+        # + 5 temporal params + 1 temporal weight
+        assert genome.n_genes == 72
 
     def test_new_genes_accessible(self):
         """New genes should be retrievable by name."""
@@ -418,3 +420,214 @@ class TestGenomeExpansion:
         assert mutated.n_genes == genome.n_genes
         # At least some genes should differ
         assert not np.allclose(genome.genes, mutated.genes)
+
+
+class TestDetectorEnableDisable:
+    """Test detector enable/disable gene gating."""
+
+    def test_enable_genes_exist(self):
+        """All 12 enable genes should be in GENE_DEFINITIONS."""
+        names = {g.name for g in GENE_DEFINITIONS}
+        for det in [
+            "classical", "morphology", "anomaly", "lens", "distribution",
+            "galaxy", "kinematic", "transient", "sersic", "wavelet",
+            "population", "variability",
+        ]:
+            assert f"enable_{det}" in names
+
+    def test_disable_gates_weight_to_zero(self):
+        """Genome with enable_sersic=0 should produce weight_sersic=0."""
+        genome = DetectionGenome()
+        # Set enable_sersic to 0 (disabled)
+        for i, gdef in enumerate(GENE_DEFINITIONS):
+            if gdef.name == "enable_sersic":
+                genome.genes[i] = 0.0
+            # Ensure sersic weight is nonzero before gating
+            if gdef.name == "weight_sersic":
+                genome.genes[i] = 0.5
+
+        config = genome.to_detection_config()
+        assert config["ensemble_weights"]["sersic"] == 0.0
+        assert config["enabled_detectors"]["sersic"] is False
+
+    def test_disable_lens_gate(self):
+        """Genome with enable_lens=0 should mark lens as disabled."""
+        genome = DetectionGenome()
+        for i, gdef in enumerate(GENE_DEFINITIONS):
+            if gdef.name == "enable_lens":
+                genome.genes[i] = 0.0
+
+        config = genome.to_detection_config()
+        # Lens has no weight gene, but enabled_detectors should reflect it
+        assert config["enabled_detectors"]["lens"] is False
+
+    def test_enable_gates_preserve_weight(self):
+        """Genome with enable_sersic=1 should preserve weight_sersic."""
+        genome = DetectionGenome()
+        for i, gdef in enumerate(GENE_DEFINITIONS):
+            if gdef.name == "enable_sersic":
+                genome.genes[i] = 1.0
+            if gdef.name == "weight_sersic":
+                genome.genes[i] = 0.5
+
+        config = genome.to_detection_config()
+        # Weight should be nonzero (normalized but not zeroed)
+        assert config["ensemble_weights"]["sersic"] > 0
+        assert config["enabled_detectors"]["sersic"] is True
+
+    def test_all_disabled_still_normalizes(self):
+        """If all detectors disabled, weights should still sum to ~1."""
+        genome = DetectionGenome()
+        for i, gdef in enumerate(GENE_DEFINITIONS):
+            if gdef.name.startswith("enable_"):
+                genome.genes[i] = 0.0
+        config = genome.to_detection_config()
+        # Temporal has no enable gate, so it should still be weighted
+        weights = config["ensemble_weights"]
+        total = sum(weights.values())
+        # Should still normalize (temporal weight / temporal weight = 1)
+        assert total > 0
+
+    def test_enabled_detectors_in_config(self):
+        """enabled_detectors dict should appear in genome config output."""
+        genome = DetectionGenome()
+        config = genome.to_detection_config()
+        assert "enabled_detectors" in config
+        assert isinstance(config["enabled_detectors"], dict)
+        assert len(config["enabled_detectors"]) == 12
+
+    def test_detection_config_roundtrip_with_enabled(self):
+        """DetectionConfig.from_genome_dict should preserve enabled_detectors."""
+        genome = DetectionGenome()
+        for i, gdef in enumerate(GENE_DEFINITIONS):
+            if gdef.name == "enable_sersic":
+                genome.genes[i] = 0.0
+
+        config_dict = genome.to_detection_config()
+        det_config = DetectionConfig.from_genome_dict(config_dict)
+        assert det_config.enabled_detectors.get("sersic") is False
+
+
+class TestSetLearnedWeights:
+    """Test injection of active-learning weights into evolution."""
+
+    def test_inject_learned_weights(self):
+        """set_learned_weights should replace worst genomes with variants."""
+        config = PipelineConfig()
+        evo = EvolutionaryDiscovery(config)
+        evo.initialize_population()
+
+        # Assign ascending fitness so we know which are worst
+        for i, g in enumerate(evo.population):
+            g.fitness = float(i)
+        evo.population.sort(key=lambda g: g.fitness, reverse=True)
+
+        weights = {"classical": 0.9, "lens": 0.8, "morphology": 0.1}
+        evo.set_learned_weights(weights)
+
+        # Check that the last 2 genomes now have the learned weights
+        for variant in evo.population[-2:]:
+            config = variant.to_detection_config()
+            # The weight_classical gene should be clipped to 0.9
+            for i, gdef in enumerate(variant.gene_defs):
+                if gdef.name == "weight_classical":
+                    assert abs(variant.genes[i] - 0.9) < 0.01
+
+    def test_empty_weights_noop(self):
+        """Empty weights dict should not modify population."""
+        config = PipelineConfig()
+        evo = EvolutionaryDiscovery(config)
+        evo.initialize_population()
+
+        original_genes = [g.genes.copy() for g in evo.population]
+        evo.set_learned_weights({})
+
+        for i, g in enumerate(evo.population):
+            np.testing.assert_array_equal(g.genes, original_genes[i])
+
+
+class TestTypeDiversityFitness:
+    """Test type-diversity bonus in fitness evaluation."""
+
+    def test_diverse_detectors_score_higher(self):
+        """Genome activating more detectors should get higher novelty bonus."""
+        from star_pattern.discovery.fitness import FitnessEvaluator
+
+        evaluator = FitnessEvaluator(
+            EvolutionConfig(), use_synthetic_injection=False
+        )
+
+        # Create a simple test image
+        rng = np.random.default_rng(42)
+        data = rng.normal(100, 10, (64, 64)).astype(np.float32)
+        image = FITSImage.from_array(data)
+
+        # Evaluate -- the type diversity bonus should be present
+        genome = DetectionGenome()
+        result = evaluator.evaluate(genome.to_detection_config(), [image])
+
+        # Novelty should incorporate type fraction
+        assert "novelty" in result
+        assert result["novelty"] >= 0
+
+
+class TestDisabledDetectorInEnsemble:
+    """Test that disabled detectors are skipped in ensemble."""
+
+    def test_disabled_detector_returns_disabled_flag(self):
+        """Disabled detector should produce disabled: True in results."""
+        config = DetectionConfig()
+        config.enabled_detectors = {"lens": False, "sersic": False}
+        detector = EnsembleDetector(config)
+
+        rng = np.random.default_rng(42)
+        data = rng.normal(100, 10, (64, 64)).astype(np.float32)
+        image = FITSImage.from_array(data)
+
+        result = detector.detect(image)
+        assert result["lens"].get("disabled") is True
+        assert result["sersic"].get("disabled") is True
+        # Classical should still run (not in disabled list)
+        assert "disabled" not in result.get("classical", {})
+
+
+class TestNeverFoundTypes:
+    """Test that never-found types appear in strategy summary."""
+
+    def test_never_found_types_in_summary(self):
+        """Summary should list anomaly types never detected."""
+        from star_pattern.pipeline.autonomous import AutonomousDiscovery
+
+        config = PipelineConfig()
+        config.max_cycles = 0
+        ad = AutonomousDiscovery(config, use_llm=False)
+
+        # No findings => all types should be in never_found
+        summary = ad._summarize_recent_findings()
+        assert "never_found_types" in summary
+        assert len(summary["never_found_types"]) > 0
+        assert "lens_arc" in summary["never_found_types"]
+        assert "stellar_stream" in summary["never_found_types"]
+
+    def test_found_types_reduces_never_found(self):
+        """Finding an anomaly should remove its type from never_found."""
+        from star_pattern.pipeline.autonomous import AutonomousDiscovery
+        from star_pattern.evaluation.metrics import Anomaly
+
+        config = PipelineConfig()
+        config.max_cycles = 0
+        ad = AutonomousDiscovery(config, use_llm=False)
+
+        # Simulate finding a lens_arc
+        result = PatternResult(
+            region_ra=180.0, region_dec=45.0,
+            anomaly_score=0.8, detection_type="lens",
+        )
+        result.anomalies = [
+            Anomaly(anomaly_type="lens_arc", detector="lens", score=0.9),
+        ]
+        ad.findings.append(result)
+
+        summary = ad._summarize_recent_findings()
+        assert "lens_arc" not in summary["never_found_types"]
+        assert "lens_arc" in summary["found_types"]

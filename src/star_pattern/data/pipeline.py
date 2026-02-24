@@ -64,6 +64,8 @@ class DataPipeline:
         bands: list[str] | None = None,
         sources: list[str] | None = None,
         include_catalog: bool = True,
+        include_temporal: bool = False,
+        temporal_config: Any | None = None,
     ) -> RegionData:
         """Fetch data from all configured sources for a region.
 
@@ -72,6 +74,8 @@ class DataPipeline:
             bands: Specific bands (source-dependent).
             sources: Subset of sources to use (None = all).
             include_catalog: Whether to fetch catalogs.
+            include_temporal: Whether to fetch multi-epoch images.
+            temporal_config: TemporalConfig for epoch image parameters.
 
         Returns:
             Merged RegionData from all sources.
@@ -104,9 +108,41 @@ class DataPipeline:
             except Exception as e:
                 logger.error(f"Failed to fetch from {source_name}: {e}")
 
+        # Fetch multi-epoch images from all sources that support it
+        if include_temporal:
+            temporal_kwargs: dict[str, Any] = {}
+            if temporal_config is not None:
+                temporal_kwargs["max_epochs"] = temporal_config.max_epochs
+                temporal_kwargs["min_baseline_days"] = temporal_config.min_baseline_days
+                temporal_kwargs["max_baseline_days"] = temporal_config.max_baseline_days
+            all_temporal: dict[str, list] = {}
+            for source_name in active:
+                source = self._sources.get(source_name)
+                if source is None:
+                    continue
+                try:
+                    epoch_images = source.fetch_epoch_images(
+                        region, **temporal_kwargs
+                    )
+                    if not epoch_images:
+                        continue
+                    for band, epochs in epoch_images.items():
+                        all_temporal.setdefault(band, []).extend(epochs)
+                except Exception as e:
+                    logger.warning(
+                        f"Temporal fetch from {source_name} failed: {e}"
+                    )
+            # Sort merged epochs by MJD within each band
+            for band in all_temporal:
+                all_temporal[band].sort(key=lambda e: e.mjd)
+            if all_temporal:
+                merged.temporal_images = all_temporal
+
         logger.info(
             f"Region data: {len(merged.images)} images, "
             f"{sum(len(c) for c in merged.catalogs.values())} catalog entries"
+            + (f", {sum(len(v) for v in merged.temporal_images.values())} epoch images"
+               if merged.temporal_images else "")
         )
         return merged
 

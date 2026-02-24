@@ -34,6 +34,11 @@ class StrategyResult:
     strategy_id: int = 0
     timestamp: str = ""
 
+    # Detector enable/disable from LLM strategy
+    disable_detectors: list[str] = field(default_factory=list)
+    enable_detectors: list[str] = field(default_factory=list)
+    pipeline_suggestion: str = ""
+
     # Pre-strategy metrics snapshot for outcome tracking
     pre_metrics: dict[str, Any] = field(default_factory=dict)
 
@@ -47,6 +52,9 @@ class StrategyResult:
             ],
             "detection_strategy": self.detection_strategy,
             "stop_doing": self.stop_doing,
+            "disable_detectors": self.disable_detectors,
+            "enable_detectors": self.enable_detectors,
+            "pipeline_suggestion": self.pipeline_suggestion,
             "token_cost": self.token_cost,
             "strategy_id": self.strategy_id,
             "timestamp": self.timestamp,
@@ -343,6 +351,18 @@ class StrategyAdvisor:
         n_regions = findings.get("n_regions", 0)
         lines.append(f"REGIONS SEARCHED: {n_regions}")
 
+        # Enabled/disabled detectors
+        enabled = genome.get("enabled_detectors", {})
+        if enabled:
+            disabled_list = [k for k, v in enabled.items() if not v]
+            if disabled_list:
+                lines.append(f"DISABLED DETECTORS: {', '.join(disabled_list)}")
+
+        # Types never found (help LLM suggest new directions)
+        never_found = findings.get("never_found_types", [])
+        if never_found:
+            lines.append(f"NEVER FOUND: {', '.join(never_found[:10])}")
+
         # Previous strategy outcome
         if prev_outcome:
             improved = prev_outcome.get("improved", False)
@@ -410,6 +430,11 @@ class StrategyAdvisor:
 
             result.detection_strategy = data.get("detection_strategy", "")
             result.stop_doing = data.get("stop_doing", "")
+
+            # Parse new fields (detector enable/disable, pipeline suggestion)
+            result.disable_detectors = data.get("disable_detectors", [])
+            result.enable_detectors = data.get("enable_detectors", [])
+            result.pipeline_suggestion = data.get("pipeline_suggestion", "")
 
         except (json.JSONDecodeError, ValueError) as e:
             logger.warning(f"Failed to parse strategy response: {e}")

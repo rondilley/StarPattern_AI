@@ -2,7 +2,7 @@
 
 ## 1. System Overview
 
-Star Pattern AI is an autonomous discovery pipeline for detecting anomalous patterns in astronomical star fields. It combines multi-survey data acquisition (including ZTF time-domain light curves), GPU-accelerated pattern detection through thirteen specialized detectors plus cross-detector feature fusion and learned meta-detection, evolutionary parameter optimization via a genetic algorithm with adaptive mutation, experience replay, and pipeline co-evolution, and multi-provider LLM-powered hypothesis generation with adversarial debate.
+Star Pattern AI is an autonomous discovery pipeline for detecting anomalous patterns in astronomical star fields. It combines multi-survey data acquisition (including ZTF time-domain light curves and multi-epoch science image cutouts), GPU-accelerated pattern detection through fourteen specialized detectors (including temporal image differencing) plus cross-detector feature fusion and learned meta-detection, evolutionary parameter optimization via a genetic algorithm with adaptive mutation, experience replay, and pipeline co-evolution, and multi-provider LLM-powered hypothesis generation with adversarial debate.
 
 The system operates in two modes:
 
@@ -26,7 +26,7 @@ flowchart TD
     MAST --> RD
     ZTF --> RD
 
-    AD --> ED[EnsembleDetector\n13 detectors + MetaDetector\n+ ComposedPipeline]
+    AD --> ED[EnsembleDetector\n14 detectors + MetaDetector\n+ ComposedPipeline]
     RD --> ED
     ED --> RAW[Raw Detections\nanomaly + meta scores,\nrich features, composed pipeline\nscores, lens candidates]
 
@@ -37,7 +37,7 @@ flowchart TD
     PR --> DEBATE[PatternDebate\nadvocate vs challenger + judge]
     PR --> CONS[PatternConsensus\nmulti-LLM rating 1-10]
 
-    AD --> EVO[EvolutionaryDiscovery\n54-gene GA + PipelineGenome\nadaptive mutation + replay]
+    AD --> EVO[EvolutionaryDiscovery\n60-gene GA + PipelineGenome\nadaptive mutation + replay]
     EVO --> |best genome| ED
 
     AD --> AL[ActiveLearner\nrefined threshold]
@@ -96,7 +96,7 @@ src/star_pattern/
     cli.py                   Click CLI (7 subcommands)
     core/                    Foundation types and configuration
     data/                    Multi-survey data acquisition with caching
-    detection/               13 pattern detectors + ensemble + feature fusion + meta-detector + compositional
+    detection/               14 pattern detectors + ensemble + feature fusion + meta-detector + compositional
     discovery/               Evolutionary optimization (GA + pipeline co-evolution)
     llm/                     Multi-provider LLM hypothesis, debate, consensus
     ml/                      Neural network backbones, models, training, representation manager
@@ -220,7 +220,7 @@ All configuration is expressed as Python dataclasses. `PipelineConfig.from_file(
 |---|---|---|
 | `FITSImage` | `fits_handler.py` | FITS I/O via astropy. Holds `data` (ndarray), `header`, `wcs`. Methods: `from_file()`, `from_array()`, `normalize()` (arcsinh/log/linear/zscale), `to_tensor()` (PyTorch CHW), `cutout()`, `pixel_scale()`, `center_coord`, `save()`. |
 | `SkyRegion` | `sky_region.py` | Equatorial coordinates (ra, dec in degrees, radius in arcmin). Properties: `center` (SkyCoord), `galactic_lat/lon`. Methods: `is_high_latitude()`, `separation_to()`, `random()` (avoids galactic plane). |
-| `RegionData` | `sky_region.py` | Container binding a `SkyRegion` to its fetched data: `images: dict[str, FITSImage]` (band-keyed), `catalogs: dict[str, StarCatalog]` (source-keyed), `metadata: dict`. |
+| `RegionData` | `sky_region.py` | Container binding a `SkyRegion` to its fetched data: `images: dict[str, FITSImage]` (band-keyed), `catalogs: dict[str, StarCatalog]` (source-keyed), `temporal_images: dict[str, list[EpochImage]]` (band-keyed, MJD-sorted), `metadata: dict`. |
 | `CatalogEntry` | `catalog.py` | Single source: ra, dec, magnitude, proper motion (pmra, pmdec), parallax, color index, object type, source ID. Methods: to_dict(), from_dict() for JSON serialization. |
 | `StarCatalog` | `catalog.py` | List of `CatalogEntry` with source tracking. Supports len, iteration, and `to_table()` for astropy Table conversion. |
 | `Anomaly` | `evaluation/metrics.py` | Single detected anomaly within a sky region. Fields: anomaly_type (lens_arc, overdensity, tidal_feature, comoving_group, etc.), detector name, pixel_x/y, sky_ra/dec (WCS-converted), score (normalized 0-1 across detectors), properties dict (raw_score, area, orientation, peak_snr, n_scales, etc.). Serializable via `to_dict()`. |
@@ -240,6 +240,7 @@ classDiagram
         +available_bands() list~str~*
         +fetch_images(region, bands) dict~str,FITSImage~*
         +fetch_catalog(region, max_results) StarCatalog*
+        +fetch_epoch_images(region, bands, max_epochs) dict~str,list~EpochImage~~
         +fetch_region(region, bands, include_catalog) RegionData
         +is_available() bool
     }
@@ -250,6 +251,8 @@ classDiagram
         -_cache: DataCache
         +fetch_images() via astroquery.sdss
         +fetch_catalog() SDSS photobj query
+        +fetch_epoch_images() Stripe 82 multi-run
+        +_in_stripe82(ra, dec) footprint gate
     }
 
     class GaiaDataSource {
@@ -264,6 +267,7 @@ classDiagram
         +bands: varies by instrument
         +fetch_images() HST/JWST cutouts
         +fetch_catalog() MAST catalog query
+        +fetch_epoch_images() multi-epoch HST/JWST
     }
 
     class ZTFDataSource {
@@ -271,6 +275,7 @@ classDiagram
         +bands: g, r, i
         +fetch_images() empty (light-curve-only)
         +fetch_catalog() IRSA TAP with light curves
+        +fetch_epoch_images() IRSA IBE cutouts
         +fetch_lightcurves() per-position query
     }
 
@@ -311,10 +316,11 @@ classDiagram
 3. Downloaded FITS files are cached by `DataCache` using SHA256 keys computed from `(source, ra, dec, radius, band)`.
 4. When multiple sources return the same band name, `DataPipeline` prefixes to avoid collisions (e.g., `sdss_r`, `gaia_G`).
 5. Catalogs from different sources are merged into a single `StarCatalog` in the `RegionData`.
+6. When `include_temporal=True`, the pipeline calls `fetch_epoch_images()` on every active source. Sources without epoch support return `{}` (base class default). Epochs from multiple sources in the same band are merged into a single sorted list in `RegionData.temporal_images`. Per-source exception handling ensures one source failing does not block others.
 
 ### 4.3 Cache Design
 
-The cache uses a JSON index file (`cache_index.json`) mapping SHA256 keys to file paths. On `get()`, stale entries (files deleted from disk) are cleaned up. Cache keys are deterministic: the same query always hits the same cache entry. Both FITS images and catalog query results are cached. Catalog entries use a special `__catalog__` band key to distinguish them from image cache entries, and are stored as JSON files containing lists of serialized CatalogEntry dicts.
+The cache uses a JSON index file (`cache_index.json`) mapping SHA256 keys to file paths. On `get()`, stale entries (files deleted from disk) are cleaned up. Cache keys are deterministic: the same query always hits the same cache entry. Both FITS images and catalog query results are cached. Catalog entries use a special `__catalog__` band key to distinguish them from image cache entries, and are stored as JSON files containing lists of serialized CatalogEntry dicts. Epoch images use source-specific cache keys (`ztf_epoch`, `mast_epoch`, `sdss_epoch`) with an `epoch` parameter (filefracday for ZTF, obs_id for MAST, run number for SDSS) to uniquely identify each observation.
 
 ### 4.4 Wide-Field Sky Coverage
 
@@ -368,6 +374,8 @@ flowchart TD
     CAT --> SPA[StellarPopulationAnalyzer\nCMD + MS + RGB + BS]
     CAT --> VA[VariabilityAnalyzer\nLight curves + Periodograms + Outbursts]
 
+    EPOCHS[EpochImages\nMulti-epoch FITS] --> TEMP[TemporalDetector\nImage Differencing + Residual Detection]
+
     CD --> ENS[EnsembleDetector\nWeighted Combination]
     SE --> ENS
     MA --> ENS
@@ -381,6 +389,7 @@ flowchart TD
     WA --> ENS
     SPA --> ENS
     VA --> ENS
+    TEMP --> ENS
 
     ENS --> RESULT[Detection Result\nanomaly_score + n_detections\n+ per-detector details]
 
@@ -548,9 +557,22 @@ Analyzes multi-epoch light curves (primarily from ZTF) for time-domain variabili
 
 The `variability_score` combines the fraction of variable sources, chi-squared significance, periodogram power, and outburst count. Light curves are stored in `CatalogEntry.properties["ztf_lightcurve"]` as `{band: [(mjd, mag, magerr), ...]}`.
 
+#### TemporalDetector (`temporal.py`)
+
+Detects changes across multiple epochs of imaging via image differencing:
+
+| Step | Method | Output |
+|---|---|---|
+| Reference building | Median-stack all epochs via WCS reprojection (`reproject_interp`). Median naturally rejects transients | Reference image + WCS |
+| Epoch subtraction | Reproject each epoch onto reference WCS, subtract. Noise via MAD with image-RMS floor | Difference image + noise estimate |
+| Residual detection | Connected-component labeling on SNR-thresholded difference (`scipy.ndimage.label`) | Per-component: centroid, peak SNR, flux, area, sign, sky coords |
+| Classification | Cross-match residuals across epochs by position | temporal_new_source, temporal_disappeared, temporal_brightening, temporal_fading, temporal_moving |
+
+Epoch images are fetched from multiple sources via the `DataSource.fetch_epoch_images()` interface: ZTF IRSA IBE science image cutouts, MAST HST/JWST calibrated observations, and SDSS Stripe 82 multi-run imaging. The `DataPipeline` merges epochs from all sources by band and sorts by MJD, so the TemporalDetector receives a unified timeline regardless of data provenance. The WCS reprojection step handles heterogeneous pixel scales and projections across sources. The `fetch_interval` config controls how often temporal images are fetched (default: every 5 cycles) to avoid excessive network usage. The `temporal_score` combines finding counts, peak SNR, and type importance weights.
+
 ### 5.3 Ensemble Scoring
 
-`EnsembleDetector.detect()` combines the eleven score categories:
+`EnsembleDetector.detect()` combines the twelve score categories:
 
 $$\begin{aligned}
 \text{anomaly\_score} &= w_\text{classical} \cdot \text{classical\_score} \\
@@ -563,14 +585,15 @@ $$\begin{aligned}
 &+ w_\text{sersic} \cdot \text{sersic\_score} \\
 &+ w_\text{wavelet} \cdot \text{wavelet\_score} \\
 &+ w_\text{population} \cdot \text{population\_score} \\
-&+ w_\text{variability} \cdot \text{variability\_score}
+&+ w_\text{variability} \cdot \text{variability\_score} \\
+&+ w_\text{temporal} \cdot \text{temporal\_score}
 \end{aligned}$$
 
-Default weights: classical=0.09, morphology=0.09, anomaly=0.09, lens=0.09, distribution=0.11, galaxy=0.09, kinematic=0.09, transient=0.04, sersic=0.07, wavelet=0.09, population=0.06, variability=0.09. All weights are genome-tunable and normalized to sum to 1.
+Default weights: classical=0.09, morphology=0.09, anomaly=0.09, lens=0.09, distribution=0.11, galaxy=0.09, kinematic=0.09, transient=0.04, sersic=0.07, wavelet=0.09, population=0.06, variability=0.09, temporal=0.0 (activated when epoch images available). All weights are genome-tunable and normalized to sum to 1.
 
 ### 5.4 Cross-Detector Feature Fusion
 
-After computing per-detector scores, the `FeatureFusionExtractor` extracts a ~60-dimensional feature vector from the full detection results dict. Features are grouped by detector:
+After computing per-detector scores, the `FeatureFusionExtractor` extracts a ~66-dimensional feature vector (60 base + 6 temporal) from the full detection results dict. Features are grouped by detector:
 
 - Sources (5): n_sources, mean_flux, flux_std, spatial_concentration, ellipticity_mean
 - Classical (6): gabor_score, fft_score, arc_score, n_arcs, dominant_frequency, dominant_orientation
@@ -1318,7 +1341,7 @@ flowchart LR
 
 ## 14. Testing Strategy
 
-419 tests across 30 test files, using real data and real APIs (no mocks):
+491 tests across 31 test files, using real data and real APIs (no mocks):
 
 | Test File | Count | Coverage |
 |---|---|---|
@@ -1344,6 +1367,8 @@ flowchart LR
 | `test_llm_cache.py` | 9 | Cache hit/miss, TTL expiry, hash determinism, corrupt file handling |
 | `test_variability.py` | 18 | Variability indices, Lomb-Scargle, outburst detection, classification, integration |
 | `test_ztf_datasource.py` | 6 | ZTF data source name/bands/images, IRSA TAP availability |
+| `test_temporal.py` | 42 | Temporal detector synthetic tests (new source, disappeared, brightening, moving, noise, WCS), ensemble integration, genome temporal genes, config, feature fusion, ZTF epoch images (real network), diagnostics, overlay |
+| `test_multi_epoch_sources.py` | 23 | Stripe 82 footprint boundary, base class default, MAST/SDSS epoch images (real network), pipeline temporal merge (synthetic), SDSS MJD extraction |
 | `test_catalog_cache.py` | 13 | CatalogEntry serialization (roundtrip, None mag, complex properties, defaults), DataCache catalog operations (put/get, cache miss, source/region independence, persistence, collision avoidance, clear, large catalog, ZTF light curve roundtrip) |
 | `test_feature_fusion.py` | 8 | Feature extraction from detection dicts, missing/errored field handling, batch extraction, correct dimensionality |
 | `test_meta_detector.py` | 11 | Linear mode, GBM transition at 50 samples, NN transition at 200, feature importance, serialization |

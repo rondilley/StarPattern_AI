@@ -126,6 +126,24 @@ def _extract_sub_detections(details: dict) -> dict[str, int]:
     if n_rg:
         counts["red giants"] = n_rg
 
+    # Temporal (multi-epoch image differencing)
+    temporal = details.get("temporal", {})
+    n_new = temporal.get("n_new_sources", 0)
+    if n_new:
+        counts["new sources (temporal)"] = n_new
+    n_dis = temporal.get("n_disappeared", 0)
+    if n_dis:
+        counts["disappeared sources"] = n_dis
+    n_brt = temporal.get("n_brightenings", 0)
+    if n_brt:
+        counts["brightenings"] = n_brt
+    n_fad = temporal.get("n_fadings", 0)
+    if n_fad:
+        counts["fadings"] = n_fad
+    n_mov = temporal.get("n_moving", 0)
+    if n_mov:
+        counts["moving objects"] = n_mov
+
     return counts
 
 

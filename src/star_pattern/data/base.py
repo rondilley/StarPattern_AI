@@ -5,7 +5,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import Any
 
-from star_pattern.core.sky_region import SkyRegion, RegionData
+from star_pattern.core.sky_region import SkyRegion, RegionData, EpochImage
 from star_pattern.core.fits_handler import FITSImage
 from star_pattern.core.catalog import StarCatalog
 
@@ -59,6 +59,31 @@ class DataSource(ABC):
         """
         ...
 
+    def fetch_epoch_images(
+        self,
+        region: SkyRegion,
+        bands: list[str] | None = None,
+        max_epochs: int = 10,
+        min_baseline_days: float = 1.0,
+        max_baseline_days: float = 2000.0,
+    ) -> dict[str, list[EpochImage]]:
+        """Fetch multi-epoch images for temporal analysis.
+
+        Default implementation returns empty dict. Override in subclasses
+        that support multi-epoch observations.
+
+        Args:
+            region: Sky region to query.
+            bands: Filters to fetch (source-dependent). None = default.
+            max_epochs: Maximum number of epochs per band.
+            min_baseline_days: Minimum time between first and last epoch.
+            max_baseline_days: Maximum time between first and last epoch.
+
+        Returns:
+            Dict mapping band -> list of EpochImage sorted by MJD.
+        """
+        return {}
+
     def fetch_region(
         self,
         region: SkyRegion,
@@ -77,10 +102,16 @@ class DataSource(ABC):
         Returns:
             RegionData with images and optionally catalogs.
         """
-        images = self.fetch_images(region, bands=bands)
+        try:
+            images = self.fetch_images(region, bands=bands)
+        except Exception:
+            images = {}
         catalogs = {}
         if include_catalog:
-            catalogs[self.name] = self.fetch_catalog(region, max_results=max_catalog)
+            try:
+                catalogs[self.name] = self.fetch_catalog(region, max_results=max_catalog)
+            except Exception:
+                pass
         return RegionData(region=region, images=images, catalogs=catalogs)
 
     def is_available(self) -> bool:

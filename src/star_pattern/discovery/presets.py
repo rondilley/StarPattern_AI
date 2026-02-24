@@ -8,8 +8,17 @@ from star_pattern.discovery.genome import DetectionGenome, GENE_DEFINITIONS
 
 
 def _make_genome(values: dict[str, float], rng: np.random.Generator) -> DetectionGenome:
-    """Create a genome from named values, random for unspecified genes."""
+    """Create a genome from named values, random for unspecified genes.
+
+    All enable_* genes default to 1.0 (all detectors on) unless
+    explicitly overridden in values.
+    """
     genes = np.array([g.random(rng) for g in GENE_DEFINITIONS])
+    # Default all enable gates to 1.0 (on) so presets don't randomly
+    # disable detectors
+    for i, gdef in enumerate(GENE_DEFINITIONS):
+        if gdef.name.startswith("enable_") and gdef.name not in values:
+            genes[i] = 1.0
     for i, gdef in enumerate(GENE_DEFINITIONS):
         if gdef.name in values:
             genes[i] = gdef.clip(values[gdef.name])
@@ -246,6 +255,30 @@ def get_preset_genomes(rng: np.random.Generator | None = None) -> list[Detection
                 "weight_population": 0.1,
                 "weight_anomaly": 0.1,
                 "weight_distribution": 0.1,
+            },
+            rng,
+        )
+    )
+
+    # Preset 12: Optimized for temporal change detection (multi-epoch differencing)
+    presets.append(
+        _make_genome(
+            {
+                "source_threshold": 2.5,
+                "temporal_snr_threshold": 4.0,
+                "temporal_min_epochs": 3,
+                "temporal_max_baseline": 1000,
+                "temporal_min_baseline": 5,
+                "temporal_dipole_max_sep": 5.0,
+                "variability_min_epochs": 8,
+                "variability_significance": 2.0,
+                "weight_temporal": 0.40,
+                "weight_variability": 0.20,
+                "weight_transient": 0.15,
+                "weight_anomaly": 0.10,
+                "weight_distribution": 0.05,
+                "weight_kinematic": 0.05,
+                "weight_population": 0.05,
             },
             rng,
         )

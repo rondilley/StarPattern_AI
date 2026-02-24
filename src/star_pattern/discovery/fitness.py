@@ -165,6 +165,18 @@ class FitnessEvaluator:
         else:
             novelty_component = 0.5
 
+        # Type-diversity bonus: reward genomes that activate multiple
+        # detector types rather than maxing out a single one.
+        # Count detectors with non-trivial scores from the feature vectors.
+        # Features 2..11 correspond to per-detector scores in the 12-D fallback;
+        # for rich features, use the first 12 dimensions.
+        if features_arr.shape[0] > 0:
+            n_feat_dims = min(12, features_arr.shape[1])
+            mean_feats = np.mean(features_arr, axis=0)[:n_feat_dims]
+            active_detectors = int(np.sum(mean_feats > 0.05))
+            type_fraction = active_detectors / max(n_feat_dims, 1)
+            novelty_component = 0.7 * novelty_component + 0.3 * type_fraction
+
         # Component 4: Diversity (variety of patterns found)
         if features_arr.shape[0] >= 2:
             diversity_component = diversity_score(features_arr)

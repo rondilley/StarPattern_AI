@@ -23,6 +23,7 @@ from star_pattern.detection.sersic import SersicAnalyzer
 from star_pattern.detection.wavelet import WaveletAnalyzer
 from star_pattern.detection.stellar_population import StellarPopulationAnalyzer
 from star_pattern.detection.variability import VariabilityAnalyzer
+from star_pattern.detection.temporal import TemporalDetector
 from star_pattern.detection.feature_fusion import FeatureFusionExtractor
 from star_pattern.utils.logging import get_logger
 
@@ -84,11 +85,20 @@ class EnsembleDetector:
             blue_straggler_offset=self.config.population_blue_straggler_offset,
         )
         self.variability = VariabilityAnalyzer(self.config)
+        self.temporal = TemporalDetector(self.config)
+
+    def _is_enabled(self, detector_name: str) -> bool:
+        """Check if a detector is enabled via config gates."""
+        gates = self.config.enabled_detectors
+        if not gates:
+            return True  # No gates = all enabled (backward compat)
+        return gates.get(detector_name, True)
 
     def detect(
         self,
         image: FITSImage,
         catalog: StarCatalog | None = None,
+        temporal_images: list | None = None,
         **kwargs: Any,
     ) -> dict[str, Any]:
         """Run all detectors and produce ensemble scores.
@@ -102,7 +112,15 @@ class EnsembleDetector:
         """
         data = image.data
         pixel_scale = image.pixel_scale()
-        logger.info(f"Running ensemble detection on {data.shape}")
+
+        n_disabled = sum(
+            1 for name in ["classical", "morphology", "lens", "sersic",
+                           "wavelet", "distribution", "galaxy", "kinematic",
+                           "transient", "population", "variability", "anomaly"]
+            if not self._is_enabled(name)
+        )
+        disabled_info = f", {n_disabled} disabled" if n_disabled else ""
+        logger.info(f"Running ensemble detection on {data.shape}{disabled_info}")
 
         results: dict[str, Any] = {
             "shape": list(data.shape),
@@ -150,69 +168,89 @@ class EnsembleDetector:
         def _run_wavelet() -> dict[str, Any]:
             return self.wavelet.analyze(data, pixel_scale_arcsec=pixel_scale)
 
-        # Submit heavy detectors to thread pool
+        # Submit heavy detectors to thread pool (skip disabled)
         parallel_tasks: dict[str, Any] = {}
         with ThreadPoolExecutor(max_workers=4) as pool:
-            parallel_tasks["classical"] = pool.submit(_run_classical)
-            parallel_tasks["morphology"] = pool.submit(_run_morphology)
-            parallel_tasks["lens"] = pool.submit(_run_lens)
-            parallel_tasks["sersic"] = pool.submit(_run_sersic)
-            parallel_tasks["wavelet"] = pool.submit(_run_wavelet)
+            if self._is_enabled("classical"):
+                parallel_tasks["classical"] = pool.submit(_run_classical)
+            if self._is_enabled("morphology"):
+                parallel_tasks["morphology"] = pool.submit(_run_morphology)
+            if self._is_enabled("lens"):
+                parallel_tasks["lens"] = pool.submit(_run_lens)
+            if self._is_enabled("sersic"):
+                parallel_tasks["sersic"] = pool.submit(_run_sersic)
+            if self._is_enabled("wavelet"):
+                parallel_tasks["wavelet"] = pool.submit(_run_wavelet)
 
         # Collect classical results
-        try:
-            classical = parallel_tasks["classical"].result()
-            results["classical"] = {
-                "gabor_score": classical["gabor_score"],
-                "fft_score": classical["fft_score"],
-                "arc_score": classical["arc_score"],
-                "n_arcs": len(classical.get("arcs", [])),
-            }
-            if classical.get("arcs"):
-                results["classical"]["arcs"] = _to_serializable(
-                    classical["arcs"]
-                )
-        except Exception as e:
-            logger.warning(f"Classical detection failed: {e}")
+        if "classical" in parallel_tasks:
+            try:
+                classical = parallel_tasks["classical"].result()
+                results["classical"] = {
+                    "gabor_score": classical["gabor_score"],
+                    "fft_score": classical["fft_score"],
+                    "arc_score": classical["arc_score"],
+                    "n_arcs": len(classical.get("arcs", [])),
+                }
+                if classical.get("arcs"):
+                    results["classical"]["arcs"] = _to_serializable(
+                        classical["arcs"]
+                    )
+            except Exception as e:
+                logger.warning(f"Classical detection failed: {e}")
+                classical = {"classical_score": 0}
+                results["classical"] = {"error": str(e)}
+        else:
             classical = {"classical_score": 0}
-            results["classical"] = {"error": str(e)}
+            results["classical"] = {"disabled": True}
 
         # Collect morphology results
-        try:
-            morph = parallel_tasks["morphology"].result()
-            results["morphology"] = {
-                "concentration": morph["concentration"],
-                "asymmetry": morph["asymmetry"],
-                "smoothness": morph["smoothness"],
-                "gini": morph["gini"],
-                "m20": morph["m20"],
-                "morphology_score": morph["morphology_score"],
-            }
-        except Exception as e:
-            logger.warning(f"Morphology analysis failed: {e}")
+        if "morphology" in parallel_tasks:
+            try:
+                morph = parallel_tasks["morphology"].result()
+                results["morphology"] = {
+                    "concentration": morph["concentration"],
+                    "asymmetry": morph["asymmetry"],
+                    "smoothness": morph["smoothness"],
+                    "gini": morph["gini"],
+                    "m20": morph["m20"],
+                    "morphology_score": morph["morphology_score"],
+                }
+            except Exception as e:
+                logger.warning(f"Morphology analysis failed: {e}")
+                morph = {"morphology_score": 0}
+                results["morphology"] = {"error": str(e)}
+        else:
             morph = {"morphology_score": 0}
-            results["morphology"] = {"error": str(e)}
+            results["morphology"] = {"disabled": True}
 
         # Collect lens results
-        try:
-            lens = parallel_tasks["lens"].result()
-            results["lens"] = {
-                "lens_score": lens["lens_score"],
-                "n_arcs": len(lens.get("arcs", [])),
-                "n_rings": len(lens.get("rings", [])),
-                "is_candidate": lens.get("is_candidate", False),
-            }
-            for key in ("central_source", "arcs", "rings"):
-                if lens.get(key):
-                    results["lens"][key] = _to_serializable(lens[key])
-        except Exception as e:
-            logger.warning(f"Lens detection failed: {e}")
+        if "lens" in parallel_tasks:
+            try:
+                lens = parallel_tasks["lens"].result()
+                results["lens"] = {
+                    "lens_score": lens["lens_score"],
+                    "n_arcs": len(lens.get("arcs", [])),
+                    "n_rings": len(lens.get("rings", [])),
+                    "is_candidate": lens.get("is_candidate", False),
+                }
+                for key in ("central_source", "arcs", "rings"):
+                    if lens.get(key):
+                        results["lens"][key] = _to_serializable(lens[key])
+            except Exception as e:
+                logger.warning(f"Lens detection failed: {e}")
+                lens = {"lens_score": 0}
+                results["lens"] = {"error": str(e)}
+        else:
             lens = {"lens_score": 0}
-            results["lens"] = {"error": str(e)}
+            results["lens"] = {"disabled": True}
 
-        # Distribution analysis (if enough sources)
+        # Distribution analysis (if enough sources and enabled)
         positions = sources.get("positions", np.empty((0, 2)))
-        if len(positions) >= 10:
+        if not self._is_enabled("distribution"):
+            dist = {"distribution_score": 0}
+            results["distribution"] = {"disabled": True}
+        elif len(positions) >= 10:
             try:
                 dist = self.distribution.analyze(positions, boundary=data.shape[::-1])
                 results["distribution"] = {
@@ -234,27 +272,33 @@ class EnsembleDetector:
             results["distribution"] = {"n_sources_too_few": True}
 
         # Galaxy detection (image + optional catalog)
-        try:
-            galaxy = self.galaxy.detect(
-                data, catalog=catalog, pixel_scale_arcsec=pixel_scale
-            )
-            results["galaxy"] = {
-                "galaxy_score": galaxy.get("galaxy_score", 0),
-                "n_tidal": len(galaxy.get("tidal_features", [])),
-                "n_mergers": len(galaxy.get("merger_candidates", [])),
-                "n_color_outliers": len(galaxy.get("color_outliers", [])),
-            }
-            for key in ("tidal_features", "merger_candidates", "color_outliers"):
-                if galaxy.get(key):
-                    results["galaxy"][key] = _to_serializable(galaxy[key])
-        except Exception as e:
-            logger.warning(f"Galaxy detection failed: {e}")
+        if not self._is_enabled("galaxy"):
             galaxy = {"galaxy_score": 0}
-            results["galaxy"] = {"error": str(e)}
+            results["galaxy"] = {"disabled": True}
+        else:
+            try:
+                galaxy = self.galaxy.detect(
+                    data, catalog=catalog, pixel_scale_arcsec=pixel_scale
+                )
+                results["galaxy"] = {
+                    "galaxy_score": galaxy.get("galaxy_score", 0),
+                    "n_tidal": len(galaxy.get("tidal_features", [])),
+                    "n_mergers": len(galaxy.get("merger_candidates", [])),
+                    "n_color_outliers": len(galaxy.get("color_outliers", [])),
+                }
+                for key in ("tidal_features", "merger_candidates", "color_outliers"):
+                    if galaxy.get(key):
+                        results["galaxy"][key] = _to_serializable(galaxy[key])
+            except Exception as e:
+                logger.warning(f"Galaxy detection failed: {e}")
+                galaxy = {"galaxy_score": 0}
+                results["galaxy"] = {"error": str(e)}
 
         # Proper motion / kinematic analysis (catalog only)
         kinematic: dict[str, Any] = {"kinematic_score": 0}
-        if catalog is not None:
+        if not self._is_enabled("kinematic"):
+            results["kinematic"] = {"disabled": True}
+        elif catalog is not None:
             try:
                 kinematic = self.proper_motion.analyze(catalog)
                 results["kinematic"] = {
@@ -277,7 +321,9 @@ class EnsembleDetector:
 
         # Transient / variability detection (catalog only)
         transient: dict[str, Any] = {"transient_score": 0}
-        if catalog is not None:
+        if not self._is_enabled("transient"):
+            results["transient"] = {"disabled": True}
+        elif catalog is not None:
             try:
                 transient = self.transient.analyze(catalog)
                 results["transient"] = {
@@ -304,47 +350,55 @@ class EnsembleDetector:
 
         # Sersic profile fitting (galaxy morphology) -- collected from parallel
         sersic: dict[str, Any] = {"sersic_score": 0}
-        try:
-            sersic = parallel_tasks["sersic"].result()
-            results["sersic"] = {
-                "sersic_score": sersic.get("sersic_score", 0),
-                "sersic_n": sersic.get("fit", {}).get("n", 0),
-                "r_e": sersic.get("fit", {}).get("r_e", 0),
-                "morphology_class": sersic.get("morphology_class", "unknown"),
-                "n_residual_features": len(sersic.get("residual_features", [])),
-            }
-            for key in (
-                "fit", "radial_profile", "residual_features",
-                "ellipticity", "position_angle",
-            ):
-                if key in sersic and sersic[key]:
-                    results["sersic"][key] = _to_serializable(sersic[key])
-        except Exception as e:
-            logger.warning(f"Sersic analysis failed: {e}")
-            sersic = {"sersic_score": 0}
-            results["sersic"] = {"error": str(e)}
+        if "sersic" in parallel_tasks:
+            try:
+                sersic = parallel_tasks["sersic"].result()
+                results["sersic"] = {
+                    "sersic_score": sersic.get("sersic_score", 0),
+                    "sersic_n": sersic.get("fit", {}).get("n", 0),
+                    "r_e": sersic.get("fit", {}).get("r_e", 0),
+                    "morphology_class": sersic.get("morphology_class", "unknown"),
+                    "n_residual_features": len(sersic.get("residual_features", [])),
+                }
+                for key in (
+                    "fit", "radial_profile", "residual_features",
+                    "ellipticity", "position_angle",
+                ):
+                    if key in sersic and sersic[key]:
+                        results["sersic"][key] = _to_serializable(sersic[key])
+            except Exception as e:
+                logger.warning(f"Sersic analysis failed: {e}")
+                sersic = {"sersic_score": 0}
+                results["sersic"] = {"error": str(e)}
+        else:
+            results["sersic"] = {"disabled": True}
 
         # Wavelet multi-scale analysis -- collected from parallel
         wavelet: dict[str, Any] = {"wavelet_score": 0}
-        try:
-            wavelet = parallel_tasks["wavelet"].result()
-            results["wavelet"] = {
-                "wavelet_score": wavelet.get("wavelet_score", 0),
-                "n_detections": len(wavelet.get("detections", [])),
-                "n_multiscale": len(wavelet.get("multiscale_objects", [])),
-                "mean_scale": wavelet.get("mean_scale", 0),
-            }
-            for key in ("detections", "multiscale_objects", "scale_spectrum"):
-                if wavelet.get(key):
-                    results["wavelet"][key] = _to_serializable(wavelet[key])
-        except Exception as e:
-            logger.warning(f"Wavelet analysis failed: {e}")
-            wavelet = {"wavelet_score": 0}
-            results["wavelet"] = {"error": str(e)}
+        if "wavelet" in parallel_tasks:
+            try:
+                wavelet = parallel_tasks["wavelet"].result()
+                results["wavelet"] = {
+                    "wavelet_score": wavelet.get("wavelet_score", 0),
+                    "n_detections": len(wavelet.get("detections", [])),
+                    "n_multiscale": len(wavelet.get("multiscale_objects", [])),
+                    "mean_scale": wavelet.get("mean_scale", 0),
+                }
+                for key in ("detections", "multiscale_objects", "scale_spectrum"):
+                    if wavelet.get(key):
+                        results["wavelet"][key] = _to_serializable(wavelet[key])
+            except Exception as e:
+                logger.warning(f"Wavelet analysis failed: {e}")
+                wavelet = {"wavelet_score": 0}
+                results["wavelet"] = {"error": str(e)}
+        else:
+            results["wavelet"] = {"disabled": True}
 
         # Stellar population / CMD analysis (catalog only)
         population: dict[str, Any] = {"population_score": 0}
-        if catalog is not None:
+        if not self._is_enabled("population"):
+            results["population"] = {"disabled": True}
+        elif catalog is not None:
             try:
                 population = self.stellar_population.analyze(catalog)
                 results["population"] = {
@@ -393,7 +447,9 @@ class EnsembleDetector:
 
         # Variability / time-domain analysis (catalog only, needs light curves)
         variability: dict[str, Any] = {"variability_score": 0}
-        if catalog is not None:
+        if not self._is_enabled("variability"):
+            results["variability"] = {"disabled": True}
+        elif catalog is not None:
             try:
                 variability = self.variability.analyze(catalog)
                 results["variability"] = {
@@ -418,6 +474,35 @@ class EnsembleDetector:
         else:
             results["variability"] = {"no_catalog": True}
 
+        # Temporal (multi-epoch image differencing)
+        temporal: dict[str, Any] = {"temporal_score": 0}
+        if temporal_images and len(temporal_images) >= 2:
+            try:
+                temporal = self.temporal.analyze(
+                    temporal_images, pixel_scale_arcsec=pixel_scale
+                )
+                results["temporal"] = {
+                    "temporal_score": temporal.get("temporal_score", 0),
+                    "n_epochs_analyzed": temporal.get("n_epochs_analyzed", 0),
+                    "baseline_days": temporal.get("baseline_days", 0),
+                    "n_new_sources": temporal.get("n_new_sources", 0),
+                    "n_disappeared": temporal.get("n_disappeared", 0),
+                    "n_brightenings": temporal.get("n_brightenings", 0),
+                    "n_fadings": temporal.get("n_fadings", 0),
+                    "n_moving": temporal.get("n_moving", 0),
+                }
+                # Preserve raw finding lists for anomaly extraction
+                for key in ("new_sources", "disappeared", "brightenings",
+                            "fadings", "moving_objects"):
+                    if temporal.get(key):
+                        results["temporal"][key] = _to_serializable(temporal[key])
+            except Exception as e:
+                logger.warning(f"Temporal analysis failed: {e}")
+                temporal = {"temporal_score": 0}
+                results["temporal"] = {"error": str(e)}
+        else:
+            results["temporal"] = {"no_temporal_images": True}
+
         # Anomaly detection: build feature vector from all detector scores
         detector_scores = np.array([
             classical.get("classical_score", 0),
@@ -431,6 +516,7 @@ class EnsembleDetector:
             wavelet.get("wavelet_score", 0),
             population.get("population_score", 0),
             variability.get("variability_score", 0),
+            temporal.get("temporal_score", 0),
         ], dtype=np.float64)
 
         # Run anomaly detector on stacked feature vectors
@@ -465,6 +551,7 @@ class EnsembleDetector:
             + weights.get("wavelet", 0.09) * wavelet.get("wavelet_score", 0)
             + weights.get("population", 0.06) * population.get("population_score", 0)
             + weights.get("variability", 0.09) * variability.get("variability_score", 0)
+            + weights.get("temporal", 0.08) * temporal.get("temporal_score", 0)
         )
 
         results["anomaly_score"] = float(np.clip(anomaly_score, 0, 1))
@@ -476,6 +563,10 @@ class EnsembleDetector:
             + kinematic.get("n_detections", 0)
             + transient.get("n_detections", 0)
             + len(variability.get("variable_candidates", []))
+            + temporal.get("n_new_sources", 0)
+            + temporal.get("n_disappeared", 0)
+            + temporal.get("n_brightenings", 0)
+            + temporal.get("n_moving", 0)
         )
 
         # Rich feature extraction (Phase 1)

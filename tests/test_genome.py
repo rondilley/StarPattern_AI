@@ -12,7 +12,7 @@ class TestDetectionGenome:
         assert len(genome.genes) == len(GENE_DEFINITIONS)
 
     def test_gene_count(self):
-        assert len(GENE_DEFINITIONS) == 54
+        assert len(GENE_DEFINITIONS) == 72
 
     def test_gene_ranges(self):
         rng = np.random.default_rng(42)
@@ -65,11 +65,12 @@ class TestDetectionGenome:
         weights = config["ensemble_weights"]
         total = sum(weights.values())
         assert abs(total - 1.0) < 0.01
-        # All 11 weight keys present
-        assert len(weights) == 11
+        # All 12 weight keys present
+        assert len(weights) == 12
         for key in ["classical", "morphology", "anomaly", "distribution",
                      "galaxy", "kinematic", "transient",
-                     "sersic", "wavelet", "population", "variability"]:
+                     "sersic", "wavelet", "population", "variability",
+                     "temporal"]:
             assert key in weights
 
     def test_mutate(self):
@@ -113,13 +114,13 @@ class TestPresets:
     def test_preset_count(self):
         from star_pattern.discovery.presets import get_preset_genomes
         presets = get_preset_genomes()
-        assert len(presets) == 11  # 5 original + kinematic + transient + sersic + wavelet + population + variability
+        assert len(presets) == 12
 
     def test_presets_valid(self):
         from star_pattern.discovery.presets import get_preset_genomes
         presets = get_preset_genomes(rng=np.random.default_rng(42))
         for preset in presets:
-            assert len(preset.genes) == 54
+            assert len(preset.genes) == 72
             config = preset.to_detection_config()
             weights = config["ensemble_weights"]
             assert abs(sum(weights.values()) - 1.0) < 0.01

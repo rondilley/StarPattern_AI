@@ -12,6 +12,7 @@ from star_pattern.detection.transient import TransientDetector
 from star_pattern.detection.sersic import SersicAnalyzer
 from star_pattern.detection.wavelet import WaveletAnalyzer
 from star_pattern.detection.stellar_population import StellarPopulationAnalyzer
+from star_pattern.detection.temporal import TemporalDetector
 from star_pattern.detection.ensemble import EnsembleDetector
 from star_pattern.detection.feature_fusion import FeatureFusionExtractor
 from star_pattern.detection.meta_detector import MetaDetector, MetaDetectorConfig
@@ -36,6 +37,7 @@ __all__ = [
     "SersicAnalyzer",
     "WaveletAnalyzer",
     "StellarPopulationAnalyzer",
+    "TemporalDetector",
     "EnsembleDetector",
     "FeatureFusionExtractor",
     "MetaDetector",

@@ -17,6 +17,7 @@ import numpy as np
 
 from star_pattern.core.config import (
     PipelineConfig, DetectionConfig, EvolutionConfig, SurveyConfig,
+    TemporalConfig,
 )
 from star_pattern.core.fits_handler import FITSImage
 from star_pattern.core.sky_region import SkyRegion, RegionData
@@ -331,6 +332,80 @@ def _extract_anomalies(
                 "rgb_fraction": rg_data.get("rgb_fraction", 0),
             },
         ))
+
+    # Temporal change detections (multi-epoch image differencing)
+    temporal = detection.get("temporal", {})
+    if isinstance(temporal, dict) and "error" not in temporal:
+        for src in temporal.get("new_sources", []):
+            anomalies.append(Anomaly(
+                anomaly_type="temporal_new_source",
+                detector="temporal",
+                sky_ra=src.get("sky_ra"),
+                sky_dec=src.get("sky_dec"),
+                pixel_x=src.get("cx"),
+                pixel_y=src.get("cy"),
+                score=src.get("peak_snr", 0),
+                properties={
+                    "peak_snr": src.get("peak_snr", 0),
+                    "n_epochs_detected": src.get("n_epochs_detected", 0),
+                },
+            ))
+        for src in temporal.get("disappeared", []):
+            anomalies.append(Anomaly(
+                anomaly_type="temporal_disappeared",
+                detector="temporal",
+                sky_ra=src.get("sky_ra"),
+                sky_dec=src.get("sky_dec"),
+                pixel_x=src.get("cx"),
+                pixel_y=src.get("cy"),
+                score=src.get("peak_snr", 0),
+                properties={
+                    "peak_snr": src.get("peak_snr", 0),
+                    "n_epochs_detected": src.get("n_epochs_detected", 0),
+                },
+            ))
+        for src in temporal.get("brightenings", []):
+            anomalies.append(Anomaly(
+                anomaly_type="temporal_brightening",
+                detector="temporal",
+                sky_ra=src.get("sky_ra"),
+                sky_dec=src.get("sky_dec"),
+                pixel_x=src.get("cx"),
+                pixel_y=src.get("cy"),
+                score=src.get("peak_snr", 0),
+                properties={
+                    "peak_snr": src.get("peak_snr", 0),
+                    "n_epochs_detected": src.get("n_epochs_detected", 0),
+                },
+            ))
+        for src in temporal.get("fadings", []):
+            anomalies.append(Anomaly(
+                anomaly_type="temporal_fading",
+                detector="temporal",
+                sky_ra=src.get("sky_ra"),
+                sky_dec=src.get("sky_dec"),
+                pixel_x=src.get("cx"),
+                pixel_y=src.get("cy"),
+                score=src.get("peak_snr", 0),
+                properties={
+                    "peak_snr": src.get("peak_snr", 0),
+                    "n_epochs_detected": src.get("n_epochs_detected", 0),
+                },
+            ))
+        for src in temporal.get("moving_objects", []):
+            anomalies.append(Anomaly(
+                anomaly_type="temporal_moving",
+                detector="temporal",
+                sky_ra=src.get("sky_ra"),
+                sky_dec=src.get("sky_dec"),
+                pixel_x=src.get("cx"),
+                pixel_y=src.get("cy"),
+                score=src.get("peak_snr", 0),
+                properties={
+                    "peak_snr": src.get("peak_snr", 0),
+                    "n_epochs_detected": src.get("n_epochs_detected", 0),
+                },
+            ))
 
     # --- Normalize scores and cap per detector ---
     # Raw scores from different detectors use incompatible scales:
@@ -649,7 +724,23 @@ class AutonomousDiscovery:
                 self._recent_images = self._recent_images[-50:]
 
             try:
-                detection = self.detector.detect(image, catalog=merged_catalog)
+                # Gather temporal images for this band
+                temporal_imgs = None
+                if region_data.has_temporal_images():
+                    # Use temporal images from matching band, or first available
+                    band_key = band.split("_")[-1]  # strip source prefix
+                    temporal_imgs = region_data.temporal_images.get(band_key)
+                    if not temporal_imgs:
+                        # Fall back to first available band
+                        for t_band, t_imgs in region_data.temporal_images.items():
+                            if len(t_imgs) >= 2:
+                                temporal_imgs = t_imgs
+                                break
+
+                detection = self.detector.detect(
+                    image, catalog=merged_catalog,
+                    temporal_images=temporal_imgs,
+                )
 
                 # Phase 3: Embed image and get anomaly score
                 if self._repr_manager is not None:
@@ -805,7 +896,8 @@ class AutonomousDiscovery:
             overlay_morphology, overlay_sersic_analysis,
             overlay_wavelet_detection, overlay_kinematic_groups,
             overlay_transient_detection, overlay_variability,
-            overlay_population_cmd, overlay_anomaly_scores,
+            overlay_population_cmd, overlay_temporal_analysis,
+            overlay_anomaly_scores,
         )
         import matplotlib.pyplot as plt
 
@@ -891,6 +983,49 @@ class AutonomousDiscovery:
         if (not population.get("no_catalog")
                 and population.get("population_score", 0) > 0.15):
             _try_save("population", overlay_population_cmd, image, population)
+
+        # Temporal diagnostic overlay (multi-panel: reference, diff, SNR, timeline)
+        temporal = detection.get("temporal", {})
+        temporal_diag = None
+        if hasattr(self.detector, "temporal"):
+            temporal_diag = getattr(self.detector.temporal, "diagnostics", None)
+        if (
+            temporal.get("temporal_score", 0) > 0
+            and temporal_diag is not None
+        ):
+            _try_save(
+                "temporal", overlay_temporal_analysis,
+                temporal_diag, temporal,
+            )
+            # Save reference + best-diff as FITS for DS9/Aladin inspection
+            try:
+                ref_img = FITSImage.__new__(FITSImage)
+                ref_img.data = temporal_diag["reference_image"]
+                ref_img.header = None
+                ref_img.wcs = temporal_diag.get("reference_wcs")
+                ref_img._file_path = None
+                ref_path = Path(self.run_manager.run_dir) / "images" / f"{prefix}_temporal_reference.fits"
+                ref_path.parent.mkdir(parents=True, exist_ok=True)
+                ref_img.save(str(ref_path))
+                saved.append(ref_path)
+
+                n_res = temporal_diag.get("n_residuals_per_epoch", [])
+                diff_images = temporal_diag.get("diff_images", [])
+                if n_res and diff_images:
+                    best_idx = int(np.argmax(n_res))
+                    diff_img = FITSImage.__new__(FITSImage)
+                    diff_img.data = diff_images[best_idx]["data"]
+                    diff_img.header = None
+                    diff_img.wcs = temporal_diag.get("reference_wcs")
+                    diff_img._file_path = None
+                    diff_path = Path(self.run_manager.run_dir) / "images" / f"{prefix}_temporal_diff_best.fits"
+                    diff_img.save(str(diff_path))
+                    saved.append(diff_path)
+            except Exception as e:
+                logger.debug(f"Temporal FITS save failed: {e}")
+
+            # Clear diagnostics to free memory (10 epochs at 2000x2000 ~ 640MB)
+            self.detector.temporal.diagnostics = None
 
         # Anomaly scores overview (always saved)
         _try_save("anomaly_scores", overlay_anomaly_scores, image, detection)
@@ -1023,7 +1158,15 @@ class AutonomousDiscovery:
                         region, self._wide_field_radius
                     )
                 else:
-                    region_data = self.data_pipeline.fetch_region(region)
+                    include_temporal = (
+                        self.config.temporal.enabled
+                        and self.cycle % self.config.temporal.fetch_interval == 0
+                    )
+                    region_data = self.data_pipeline.fetch_region(
+                        region,
+                        include_temporal=include_temporal,
+                        temporal_config=self.config.temporal,
+                    )
             except Exception as e:
                 logger.error(f"Data fetch failed: {e}")
                 continue
@@ -1252,6 +1395,39 @@ class AutonomousDiscovery:
         if strategy.focus_regions:
             self._suggested_regions = list(strategy.focus_regions)
 
+        # Apply detector enable/disable gates to current genome
+        if self._current_genome is not None:
+            _VALID = {
+                "classical", "morphology", "anomaly", "lens", "distribution",
+                "galaxy", "kinematic", "transient", "sersic", "wavelet",
+                "population", "variability",
+            }
+            changed = []
+            for det_name in strategy.disable_detectors:
+                if det_name in _VALID:
+                    gene_name = f"enable_{det_name}"
+                    for i, gdef in enumerate(self._current_genome.gene_defs):
+                        if gdef.name == gene_name:
+                            self._current_genome.genes[i] = 0.0
+                            changed.append(f"-{det_name}")
+                            break
+            for det_name in strategy.enable_detectors:
+                if det_name in _VALID:
+                    gene_name = f"enable_{det_name}"
+                    for i, gdef in enumerate(self._current_genome.gene_defs):
+                        if gdef.name == gene_name:
+                            self._current_genome.genes[i] = 1.0
+                            changed.append(f"+{det_name}")
+                            break
+            if changed:
+                # Rebuild detector with updated config
+                new_config = DetectionConfig.from_genome_dict(
+                    self._current_genome.to_detection_config()
+                )
+                self.detector = EnsembleDetector(new_config)
+                self.config.detection = new_config
+                logger.info(f"Strategy applied detector gates: {', '.join(changed)}")
+
     def _summarize_recent_findings(self) -> dict[str, Any]:
         """Build compact findings summary for strategy sessions."""
         recent = self.findings[-25:] if self.findings else []
@@ -1268,17 +1444,40 @@ class AutonomousDiscovery:
             if f.debate_verdict == "artifact":
                 n_artifacts += 1
 
+        # Collect all anomaly types ever found
+        all_found_types = set()
+        for f in self.findings:
+            for a in getattr(f, "anomalies", []) or []:
+                all_found_types.add(a.anomaly_type)
+
+        # Types that the system has never detected
+        all_possible_types = {
+            "lens_arc", "lens_ring", "overdensity", "multiscale_object",
+            "tidal_feature", "merger", "classical_arc", "sersic_residual",
+            "comoving_group", "stellar_stream", "runaway_star",
+            "flux_outlier", "variable_star", "periodic_variable",
+            "blue_straggler", "red_giant",
+            "temporal_new_source", "temporal_disappeared",
+            "temporal_brightening", "temporal_fading", "temporal_moving",
+        }
+        never_found = sorted(all_possible_types - all_found_types)
+
         return {
             "n_total": len(recent),
             "n_high_confidence": n_high,
             "n_artifacts": n_artifacts,
             "type_counts": type_counts,
             "n_regions": len(self.searched_regions),
+            "found_types": sorted(all_found_types),
+            "never_found_types": never_found,
         }
 
     def _evolve_parameters(self) -> None:
         """Run a short evolutionary search to adapt detection parameters."""
         if len(self._recent_images) < 5:
+            logger.info(
+                f"PHASE: EVOLVING -- skipped (need 5 images, have {len(self._recent_images)})"
+            )
             return
 
         # Subsample images to cap evolution compute
@@ -1316,6 +1515,13 @@ class AutonomousDiscovery:
         if self._pending_strategy is not None:
             engine.initialize_population()
             engine.apply_strategy_to_population(self._pending_strategy)
+
+        # Inject active-learning-derived weights into population
+        learned_weights = self.active_learner.get_learned_weights()
+        if learned_weights:
+            if not engine.population:
+                engine.initialize_population()
+            engine.set_learned_weights(learned_weights)
 
         if self._shutdown:
             logger.info("Shutdown: skipping evolution run.")

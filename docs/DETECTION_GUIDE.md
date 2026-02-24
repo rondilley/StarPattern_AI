@@ -20,21 +20,23 @@ A comprehensive reference for every pattern detection algorithm in the pipeline,
 12. [Wavelet Multi-Scale Analysis](#12-wavelet-multi-scale-analysis)
 13. [Stellar Population Analysis](#13-stellar-population-analysis)
 14. [Time-Domain Variability Analysis](#14-time-domain-variability-analysis)
-15. [Ensemble Scoring](#15-ensemble-scoring)
-16. [Cross-Detector Feature Fusion](#16-cross-detector-feature-fusion)
-17. [Learned Meta-Detector](#17-learned-meta-detector)
-18. [Compositional Detection Pipelines](#18-compositional-detection-pipelines)
-19. [Classification and Evaluation](#19-classification-and-evaluation)
-20. [Cross-Reference Validation](#20-cross-reference-validation)
+15. [Temporal Image Differencing (Multi-Epoch)](#15-temporal-image-differencing)
+16. [Ensemble Scoring](#16-ensemble-scoring)
+17. [Cross-Detector Feature Fusion](#17-cross-detector-feature-fusion)
+18. [Learned Meta-Detector](#18-learned-meta-detector)
+19. [Compositional Detection Pipelines](#19-compositional-detection-pipelines)
+20. [Classification and Evaluation](#20-classification-and-evaluation)
+21. [Cross-Reference Validation](#21-cross-reference-validation)
 
 ---
 
 ## 1. How Detection Works
 
-The `EnsembleDetector` runs 13 independent detectors on every sky region, extracts a ~60-dimensional rich feature vector, and combines scores via both a weighted linear ensemble and a learned meta-detector into a final meta_score. Each detector operates on either:
+The `EnsembleDetector` runs 14 independent detectors on every sky region, extracts a ~66-dimensional rich feature vector, and combines scores via both a weighted linear ensemble and a learned meta-detector into a final meta_score. Each detector operates on either:
 
 - **Image data** (FITS): classical, morphology, anomaly, lens, distribution, galaxy, sersic, wavelet
 - **Catalog data** (StarCatalog): kinematic, transient, population, variability
+- **Multi-epoch images** (EpochImage): temporal (image differencing across epochs from ZTF, MAST, SDSS)
 - **Both**: galaxy (image + catalog for color analysis)
 
 Every detector produces a score in [0, 1] where 0 means "nothing interesting" and 1 means "maximally anomalous." The ensemble combines these with configurable weights (tuned by the evolutionary algorithm) to produce a final anomaly_score.
@@ -44,18 +46,22 @@ Every detector produces a score in [0, 1] where 0 means "nothing interesting" an
 ```mermaid
 flowchart TD
     REGION[SkyRegion\nRA, Dec, radius] --> DP[DataPipeline]
-    DP --> SDSS[SDSS\nimages]
+    DP --> SDSS[SDSS\nimages + Stripe 82 epochs]
     DP --> GAIA[Gaia DR3\ncatalog]
-    DP --> MAST[MAST\nimages]
-    DP --> ZTF[ZTF\nlight curves]
+    DP --> MAST[MAST\nimages + HST/JWST epochs]
+    DP --> ZTF[ZTF\nlight curves + IBE epochs]
 
     SDSS --> IMG[FITS Image]
     MAST --> IMG
     GAIA --> CAT[StarCatalog]
     ZTF --> CAT
+    SDSS --> EPOCHS[Epoch Images\nmulti-source merged by band]
+    MAST --> EPOCHS
+    ZTF --> EPOCHS
 
     IMG --> ENS[EnsembleDetector.detect]
     CAT --> ENS
+    EPOCHS --> ENS
 
     ENS --> SE[SourceExtractor\npositions]
     ENS --> CD[ClassicalDetector\nGabor + FFT + Hough]
@@ -70,6 +76,7 @@ flowchart TD
     ENS --> WA[WaveletAnalyzer\nmulti-scale decomposition]
     ENS --> SPA[StellarPopulationAnalyzer\nCMD analysis]
     ENS --> VA[VariabilityAnalyzer\nlight curves + periodograms]
+    ENS --> TEMP[TemporalDetector\nimage differencing]
 
     SE --> SCORE[Weighted Ensemble Score\nanomaly_score in 0 to 1]
     CD --> SCORE
@@ -84,6 +91,7 @@ flowchart TD
     WA --> SCORE
     SPA --> SCORE
     VA --> SCORE
+    TEMP --> SCORE
 
     style ENS fill:#0f3460,color:#e0e0ff
     style SCORE fill:#1a1a2e,color:#e0e0ff
@@ -1207,12 +1215,129 @@ $$\text{variability\_score} = 0.4 \cdot \frac{n_\text{variable}}{n_\text{analyze
 
 ---
 
-## 15. Ensemble Scoring
+## 15. Temporal Image Differencing
+
+**File:** `detection/temporal.py`
+**Class:** `TemporalDetector`
+**Detects:** Changes across multiple epochs of imaging: new sources, disappeared sources, brightenings, fadings, and moving objects via image differencing.
+
+This detector operates on multi-epoch images (`EpochImage` objects) rather than single-epoch FITS images or catalogs. It requires at least 2 epochs in any band to construct a reference and compute differences. Epoch images can come from ZTF (IRSA IBE cutouts), MAST (HST/JWST), or SDSS Stripe 82 -- the `DataPipeline` merges them all by band before passing to the detector.
+
+### Algorithm Flow
+
+```mermaid
+flowchart TD
+    EPOCHS[Multi-epoch images\nband -> list of EpochImage\nsorted by MJD] --> REF[Step 1: Reference Building\nmedian-stack all epochs\nvia WCS reprojection]
+    REF --> DIFF[Step 2: Epoch Subtraction\nreproject each epoch onto\nreference WCS, subtract]
+    DIFF --> NOISE[Noise Estimation\nMAD with RMS floor]
+    NOISE --> SNR[SNR Map\n= diff / noise]
+    SNR --> THRESH[Step 3: Residual Detection\nthreshold at snr_threshold\nconnected component labeling]
+    THRESH --> COMP[Per-component extraction\ncentroid, peak SNR, flux,\narea, sign, sky coords]
+    COMP --> CLASS[Step 4: Classification\ncross-match across epochs\nby position]
+    CLASS --> NEW[temporal_new_source\nappears in later epochs only]
+    CLASS --> DIS[temporal_disappeared\npresent in early, absent in late]
+    CLASS --> BRI[temporal_brightening\npositive residual, present in ref]
+    CLASS --> FAD[temporal_fading\nnegative residual, present in ref]
+    CLASS --> MOV[temporal_moving\npositional shift across epochs]
+```
+
+### Step 1: Reference Building
+
+The reference image is constructed by median-stacking all epochs after WCS reprojection onto a common grid:
+
+1. Choose the first epoch's WCS as the reference frame
+2. Reproject each epoch onto the reference WCS using `reproject_interp`
+3. Compute the pixel-wise median across all reprojected epochs
+
+The median naturally rejects transient events: a source that appears in only 1-2 of 10 epochs will not contaminate the reference. This is key for detecting new sources and transients without a separate "template" image.
+
+### Step 2: Epoch Subtraction
+
+For each epoch:
+1. Reproject onto the reference WCS (if not already aligned)
+2. Compute the difference image: `diff = epoch - reference`
+3. Estimate noise via the Median Absolute Deviation: `noise = 1.4826 * median(|diff|)`
+4. Apply a noise floor: `noise = max(MAD, RMS_of_quietest_80% * 0.01)` to prevent near-zero noise when epochs share identical WCS (floating-point-only differences)
+5. Compute SNR map: `SNR = diff / noise`
+
+The noise floor is critical: without it, perfectly aligned epochs produce astronomically high SNR values for any real change because the MAD of their difference is near-zero.
+
+### Step 3: Residual Detection
+
+Significant residuals are extracted via connected-component labeling:
+
+1. Threshold the SNR map at `snr_threshold` (default 5.0, genome-tunable)
+2. Apply `scipy.ndimage.label` to find connected components
+3. For each component, extract:
+   - Centroid position (pixel and sky via WCS)
+   - Peak SNR value
+   - Integrated flux (sum of difference pixels)
+   - Area in pixels
+   - Sign (positive = brighter than reference, negative = fainter)
+
+### Step 4: Classification
+
+Residuals are cross-matched across epochs by position to classify the type of change:
+
+| Classification | Criteria | Astrophysical Examples |
+|---|---|---|
+| `temporal_new_source` | Positive residual in late epochs, absent in early epochs | Supernovae, novae, flare stars |
+| `temporal_disappeared` | Negative residual in late epochs, present in early epochs | Fading transients, eclipses, catalog artifacts |
+| `temporal_brightening` | Positive residual, source present in reference at same position | AGN flares, variable star maxima, microlensing |
+| `temporal_fading` | Negative residual, source present in reference | Variable star minima, dust obscuration |
+| `temporal_moving` | Positional shift of a residual across epochs | Asteroids, high-proper-motion stars, satellite trails |
+
+### Multi-Source Epoch Images
+
+The `DataPipeline` collects epoch images from all available sources via the `DataSource.fetch_epoch_images()` interface:
+
+| Source | Coverage | Epoch Key | MJD Source | Typical Baseline |
+|---|---|---|---|---|
+| ZTF | Northern sky (Dec > -30), g/r/i | filefracday | JD - 2400000.5 | Days to years |
+| MAST (HST/JWST) | Pointed observations, any filter | obs_id | t_min (already MJD) | Months to decades |
+| SDSS Stripe 82 | Dec [-1.5, +1.5], RA [310, 60], ugriz | run number | TAI / 86400 from FITS header | Months to years |
+
+Sources without epoch support (e.g., Gaia) return `{}` from the base class default. Epochs from multiple sources in the same band are merged into a single MJD-sorted list. The TemporalDetector handles heterogeneous pixel scales and projections via WCS reprojection, so mixing ZTF (1"/px) with HST (0.05"/px) works correctly.
+
+**SDSS Stripe 82 gate:** A fast `_in_stripe82(ra, dec)` check (Dec in [-1.5, +1.5] AND (RA >= 310 OR RA <= 60)) prevents wasted queries for the ~65% of sky with single-epoch SDSS coverage.
+
+### Temporal Score
+
+$$\begin{aligned}
+\text{score} &= 0.3 \cdot \min(n_\text{findings} / 5,\; 1) \\
+&+ 0.3 \cdot \min(\text{peak\_snr} / 20,\; 1) \\
+&+ 0.2 \cdot \sum_t w_t \cdot \mathbb{1}[\text{type } t \text{ found}] \\
+&+ 0.2 \cdot \min(n_\text{types} / 3,\; 1)
+\end{aligned}$$
+
+Where the type importance weights $w_t$ prioritize new sources and moving objects over simple brightenings/fadings.
+
+### Parameters
+
+| Parameter | Default | Range (Genome) | Effect |
+|---|---|---|---|
+| `temporal_snr_threshold` | 5.0 | 3.0 - 10.0 | Minimum SNR for residual detection; lower = more detections |
+| `temporal_min_epochs` | 3 | 2 - 10 | Minimum epochs required per band |
+| `temporal_weight` | 0.0 | 0.0 - 1.0 | Ensemble weight (activated when epochs available) |
+
+The `fetch_interval` config (default 5 cycles) controls how often epoch images are fetched during autonomous discovery to limit network usage.
+
+### Example: What This Finds
+
+- **Supernova (score > 0.7):** New source appearing at 15-sigma in late-epoch ZTF images at a position with no reference source. Cross-match with TNS may confirm.
+- **AGN flare (score ~ 0.5):** Brightening at 8-sigma over 200 days in r-band, source present in reference. Multi-year MAST baseline shows prior quiescent state.
+- **Asteroid (score ~ 0.4):** Moving source detected at 3 positions across 3 nights, classified as `temporal_moving`.
+- **Fading variable (score ~ 0.3):** 5-sigma fading in 2 of 10 epochs, classified as `temporal_fading`.
+- **No temporal data (score = 0):** Region has no multi-epoch coverage, or all epochs are too similar. Detector returns gracefully with zero score.
+
+---
+
+## 16. Ensemble Scoring
 
 **File:** `detection/ensemble.py`
 **Class:** `EnsembleDetector`
 
-The ensemble combines all 13 detector scores into a single anomaly_score:
+The ensemble combines all 14 detector scores into a single anomaly_score:
 
 $$\begin{aligned}
 \text{anomaly\_score} &= w_\text{classical} \cdot s_\text{classical} \\
@@ -1226,7 +1351,8 @@ $$\begin{aligned}
 &+ w_\text{sersic} \cdot s_\text{sersic} \\
 &+ w_\text{wavelet} \cdot s_\text{wavelet} \\
 &+ w_\text{population} \cdot s_\text{population} \\
-&+ w_\text{variability} \cdot s_\text{variability}
+&+ w_\text{variability} \cdot s_\text{variability} \\
+&+ w_\text{temporal} \cdot s_\text{temporal}
 \end{aligned}$$
 
 ### Default Weights
@@ -1245,6 +1371,7 @@ $$\begin{aligned}
 | wavelet | 0.09 | Multi-scale features |
 | population | 0.06 | CMD anomalies |
 | variability | 0.09 | Time-domain light curve analysis |
+| temporal | 0.0 | Image differencing (activated when epoch images available) |
 
 All weights are genome-tunable and normalized to sum to 1 during evolution.
 
@@ -1258,7 +1385,7 @@ The genetic algorithm includes 11 weight genes (one per scoring detector) that e
 
 ---
 
-## 16. Cross-Detector Feature Fusion
+## 17. Cross-Detector Feature Fusion
 
 **File:** `detection/feature_fusion.py`
 **Class:** `FeatureFusionExtractor`
@@ -1284,6 +1411,7 @@ The weighted ensemble reduces 13 detector outputs to a single scalar (anomaly_sc
 | Wavelet | 4 | wavelet_score, n_detections, n_multiscale, mean_scale |
 | Population | 4 | population_score, n_blue_stragglers, n_red_giants, multiple_populations |
 | Variability | 4 | variability_score, n_variables, n_periodic, n_transients |
+| Temporal | 6 | temporal_score, n_new_sources, n_disappeared, n_brightening, n_fading, n_moving |
 
 All missing or errored fields default to 0. The feature vector is stored in `results["rich_features"]` and consumed by the MetaDetector and FitnessEvaluator.
 
@@ -1298,7 +1426,7 @@ EnsembleDetector.detect(image, catalog)
 
 ---
 
-## 17. Learned Meta-Detector
+## 18. Learned Meta-Detector
 
 **File:** `detection/meta_detector.py`
 **Class:** `MetaDetector`
@@ -1341,7 +1469,7 @@ After training, `get_feature_importance()` returns a dict mapping feature names 
 
 ---
 
-## 18. Compositional Detection Pipelines
+## 19. Compositional Detection Pipelines
 
 **File:** `detection/compositional.py`, `discovery/pipeline_genome.py`, `discovery/pipeline_presets.py`
 **Classes:** `ComposedPipeline`, `PipelineGenome`, `OperationRegistry`
@@ -1414,7 +1542,7 @@ Pipeline genomes are co-evolved alongside standard detection genomes during `_ev
 
 ---
 
-## 19. Classification and Evaluation
+## 20. Classification and Evaluation
 
 ### Classification and Evaluation Flow
 
@@ -1462,6 +1590,7 @@ After the ensemble produces a detection, the LocalClassifier determines what typ
 | distribution | spatial_clustering | Star/galaxy cluster, overdensity, void |
 | transient | transient_candidate | Astrometric/photometric variability indicator |
 | variability | variable_star | Time-domain light curve variability |
+| temporal | temporal_change | Multi-epoch image differencing detection |
 | anomaly | statistical_outlier | Unusual detector score combination |
 | classical | classical_pattern | Spatial frequency/arc pattern |
 
@@ -1487,7 +1616,7 @@ Determines whether a detection is real, an artifact, or inconclusive.
 
 ---
 
-## 20. Cross-Reference Validation
+## 21. Cross-Reference Validation
 
 **File:** `evaluation/cross_reference.py`
 **Class:** `CatalogCrossReferencer`
