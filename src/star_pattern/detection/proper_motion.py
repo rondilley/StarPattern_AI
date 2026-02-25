@@ -154,6 +154,15 @@ class ProperMotionAnalyzer:
             mean_ra = float(np.mean([e.ra for e in member_entries]))
             mean_dec = float(np.mean([e.dec for e in member_entries]))
 
+            # Expected field members: fraction of total sources in
+            # a PM-space cell of size eps^2, scaled by number of sources
+            pm_range = np.ptp(pm_data, axis=0)
+            pm_area = max(float(pm_range[0] * pm_range[1]), 1e-10)
+            cell_area = self.cluster_eps ** 2 * np.pi
+            expected_field = max(
+                float(len(entries) * cell_area / pm_area), 0.1,
+            )
+
             groups.append({
                 "type": "comoving_group",
                 "n_members": member_count,
@@ -164,6 +173,7 @@ class ProperMotionAnalyzer:
                 "mean_ra": mean_ra,
                 "mean_dec": mean_dec,
                 "pm_total": float(np.sqrt(mean_pmra**2 + mean_pmdec**2)),
+                "expected_field": expected_field,
                 "member_ids": [e.source_id for e in member_entries[:20]],
             })
 

@@ -223,8 +223,9 @@ All configuration is expressed as Python dataclasses. `PipelineConfig.from_file(
 | `RegionData` | `sky_region.py` | Container binding a `SkyRegion` to its fetched data: `images: dict[str, FITSImage]` (band-keyed), `catalogs: dict[str, StarCatalog]` (source-keyed), `temporal_images: dict[str, list[EpochImage]]` (band-keyed, MJD-sorted), `metadata: dict`. |
 | `CatalogEntry` | `catalog.py` | Single source: ra, dec, magnitude, proper motion (pmra, pmdec), parallax, color index, object type, source ID. Methods: to_dict(), from_dict() for JSON serialization. |
 | `StarCatalog` | `catalog.py` | List of `CatalogEntry` with source tracking. Supports len, iteration, and `to_table()` for astropy Table conversion. |
-| `Anomaly` | `evaluation/metrics.py` | Single detected anomaly within a sky region. Fields: anomaly_type (lens_arc, overdensity, tidal_feature, comoving_group, etc.), detector name, pixel_x/y, sky_ra/dec (WCS-converted), score (normalized 0-1 across detectors), properties dict (raw_score, area, orientation, peak_snr, n_scales, etc.). Serializable via `to_dict()`. |
-| `PatternResult` | `evaluation/metrics.py` | Scored detection result: region coordinates, detection type, anomaly score, significance, novelty, full details dict, cross-matches, hypothesis, debate verdict, consensus score, metadata, **anomalies list** (per-detection `Anomaly` objects extracted by `_extract_anomalies()`). `combined_score` property: $0.4 \cdot \text{anomaly} + 0.3 \cdot \text{significance} + 0.2 \cdot \text{novelty} + 0.1 \cdot \text{catalog\_novelty}$. |
+| `Anomaly` | `evaluation/metrics.py` | Single detected anomaly within a sky region. Fields: anomaly_type (lens_arc, overdensity, tidal_feature, comoving_group, etc.), detector name, pixel_x/y, sky_ra/dec (WCS-converted), score (normalized 0-1 across detectors), properties dict (raw_score, area, orientation, peak_snr, n_scales, etc.), **confidence** (`ConfidenceScore` or None -- statistically grounded confidence with p-value and annotation), **group_id** (str or None -- shared ID for spatially co-located anomalies from different detectors). Serializable via `to_dict()`. |
+| `PatternResult` | `evaluation/metrics.py` | Scored detection result: region coordinates, detection type, anomaly score, significance, novelty, full details dict, cross-matches, hypothesis, debate verdict, consensus score, metadata, **anomalies list** (per-detection `Anomaly` objects extracted by `_extract_anomalies()`), **region_confidence** (`ConfidenceScore` or None -- overall region significance from `LocalEvaluator`). `combined_score` property: $0.4 \cdot \text{anomaly} + 0.3 \cdot \text{significance} + 0.2 \cdot \text{novelty} + 0.1 \cdot \text{catalog\_novelty}$. |
+| `ConfidenceScore` | `evaluation/confidence.py` | Statistical confidence for an anomaly detection. Carries confidence (1 - p_corrected), raw p-value, corrected p-value, physical quantity name (SNR/sigma/FAP), measured value, statistical method, human-readable annotation, independent test count, correction method, and cross-detector agreement details. Serializable via `to_dict()`/`from_dict()`. |
 
 ---
 
@@ -1096,6 +1097,29 @@ The manager buffers images during detection, periodically retrains the backbone 
 | `multiple_comparison_correction()` | Bonferroni or Benjamini-Hochberg FDR | corrected p-values |
 | `permutation_test()` | Permutation distribution of test statistic | p_value, observed, null distribution |
 
+### 9.1.1 Unified Confidence Scoring
+
+The `ConfidenceEvaluator` (in `evaluation/confidence.py`) replaces arbitrary hard caps with statistically defensible quality-floor filtering. Each detector's raw measurement maps to a p-value via the appropriate null-hypothesis distribution; p-values serve as the common currency across detectors.
+
+| Detector | Physical Quantity | Statistical Method | Quality Floor |
+|---|---|---|---|
+| Lens | Arc/ring SNR | `norm.sf(snr)` | SNR >= 3 (p < 0.0013) |
+| Distribution | Overdensity sigma | `norm.sf(sigma)` + Bonferroni for grid cells | sigma >= 3 after correction |
+| Galaxy | Tidal SNR, merger asymmetry sigma | Max sub-feature confidence | Any sub-feature SNR >= 3 |
+| Morphology | CAS z-scores vs normal galaxies | Fisher's combined p on individual CAS p-values | Fisher p < 0.05 |
+| Wavelet | Per-scale SNR (coefficient/MAD) | BH-FDR across scales | Corrected p < 0.05 at any scale |
+| Classical | Hough votes, Gabor energy | Poisson CDF for votes, `norm.sf` for Gabor | Any method p < 0.01 |
+| Kinematic | Group membership vs field rate | `1 - poisson.cdf(n-1, expected_field)` | p < 0.01 |
+| Transient | Deviation sigma | `2 * norm.sf(abs(sigma))` two-tailed | sigma >= 3 |
+| Sersic | Residual SNR, chi2 of fit | `norm.sf(snr)` for residuals, `chi2.sf` for fit | SNR >= 3 or chi2 p < 0.01 |
+| Population | Blue straggler/RGB fraction vs field rate | Binomial test | p < 0.05 |
+| Variability | Lomb-Scargle FAP, variability chi2 | FAP is already a p-value; `chi2.sf` for excess variance | FAP < 0.01 or chi2 p < 0.01 |
+| Temporal | Epoch-diff peak SNR | `norm.sf(snr)` | SNR >= 5 |
+
+**Spatial grouping**: When multiple detectors fire within 5 arcsec (sky) or 15px (image) of each other, they are linked via a shared `group_id` using Union-Find. Each anomaly retains its own per-detector `ConfidenceScore`. Group summaries use Fisher's combined p-value across the group.
+
+**Region-wide correction**: After per-detector quality-floor filtering, BH-FDR correction (via `statistical.py:multiple_comparison_correction`) is applied across all surviving anomalies in a region to control the false discovery rate.
+
 ### 9.2 Per-Anomaly Extraction
 
 `_extract_anomalies()` in `autonomous.py` iterates each detector's output and creates an `Anomaly` object for each spatially-located detection:
@@ -1113,8 +1137,11 @@ The manager buffers images during detection, periodically retrains the backbone 
 | Transient flux outliers | `flux_outlier` | Catalog RA/Dec |
 | Variability candidates | `variable_star`, `periodic_variable` | Catalog RA/Dec |
 | Stellar population | `blue_straggler`, `red_giant` | Region-level (no coords) |
+| Temporal changes | `temporal_new_source`, `temporal_disappeared`, `temporal_brightening`, `temporal_fading`, `temporal_moving` | Pixel (WCS-converted to sky) |
 
-Scoring: Raw detector scores use incompatible scales (galaxy strength ~100k, overdensity sigma ~1-10, wavelet n_scales ~1-5). Scores are normalized to [0, 1] per detector before global ranking. Each detector is capped at 8 anomalies (`_MAX_PER_DETECTOR`), total capped at 50 per region (`_MAX_ANOMALIES_PER_REGION`). Raw scores preserved in `properties["raw_score"]` for display.
+**Scoring and filtering**: Raw detector scores use incompatible scales (galaxy strength ~100k, overdensity sigma ~1-10, wavelet n_scales ~1-5). Scores are normalized to [0, 1] per detector before global ranking. Raw scores preserved in `properties["raw_score"]` for display.
+
+Each anomaly receives a `ConfidenceScore` from the `ConfidenceEvaluator`, then is filtered by its detector's quality floor (see Section 9.1.1). After quality-floor filtering, BH-FDR correction adjusts p-values for multiple comparisons across the region, spatial groups are assigned for co-located anomalies, and results are sorted by confidence descending. System protection limits cap at 500 per detector and 500 per region (OOM/bug guards).
 
 ### 9.3 Cross-Reference
 
@@ -1152,14 +1179,15 @@ Each returns `(modified_image, injection_metadata)` for detection rate measureme
 
 ### 10.2 Discovery Mosaic
 
-`mosaic.py` creates an anomaly-centric mosaic (`create_discovery_mosaic()`) with cutouts centered on the top-scoring individual anomalies:
+`mosaic.py` creates an anomaly-centric mosaic (`create_discovery_mosaic()`) with cutouts centered on quality-passing anomalies:
 
 - **Overview panel**: full-field image with numbered yellow markers at each anomaly position (WCS-converted)
-- **Cutout panels**: one per anomaly, sorted by normalized score, showing:
+- **Cutout panels**: one per anomaly, sorted by confidence descending (falls back to score), showing:
   - ZScale-stretched grayscale image centered on the detection
   - Cyan crosshair at the detection centroid
   - Yellow dashed circle sized to the feature (point-source radius or sqrt(area/pi) for extended features)
-  - Label: anomaly number, type, parent finding
+  - Label: anomaly number, type, confidence value, parent finding
+- **Dynamic panel count**: all quality-passing anomalies are shown (no arbitrary cap). System protection limit at 100 panels to prevent matplotlib OOM. When >30 panels, uses compact layout (6 columns, 3.5-inch panels) vs standard (4 columns, 5-inch panels).
 
 **Cutout sizing**: Point sources use 3% of image dimension (clamped [30, 200] px). Extended features (tidal, sersic residual, multiscale) scale to 1.5x the feature's characteristic radius from its area property (clamped [60, 400] px).
 
@@ -1172,10 +1200,12 @@ Falls back to per-finding panels (legacy `_create_finding_mosaic()`) when no per
 ### 10.3 Reports
 
 `DiscoveryReport.generate_full_report()` produces:
-- **Markdown report** (`report.md`): findings with per-anomaly tables (type, location, detector, score, properties), catalog cross-references, evidence metrics, anomaly summary by type
-- **JSON report** (`report.json`): machine-readable full data including serialized anomaly list per finding
+- **Markdown report** (`report.md`): findings with per-anomaly tables (type, location, detector, score, confidence, properties), evidence breakdown with annotations, group summaries, catalog cross-references, evidence metrics, anomaly summary by type
+- **JSON report** (`report.json`): machine-readable full data including serialized anomaly list per finding with confidence scores
 - **Mosaic** (`mosaic.png`): anomaly-centric cutout grid
 - **Histogram** (`scores_histogram.png`): score distribution plot
+
+All findings are shown (no truncation caps on low-confidence findings or cross-matches). Reports show full evidence detail for every quality-passing anomaly.
 
 **Per-anomaly table** in each finding:
 
@@ -1186,7 +1216,13 @@ Falls back to per-finding panels (legacy `_create_finding_mosaic()`) when no per
 | Location | RA, Dec (sky) or px (x, y) for pixel-only |
 | Detector | Source detector name |
 | Score | Raw value with units (SNR, sigma, scales) or normalized for arbitrary-scale detectors |
+| Confidence | Statistical confidence (1 - p_corrected) with method annotation |
+| Group | Spatial group ID if co-located with other detections |
 | Key properties | Compact summary (radius, area, orientation, n_members, period, etc.) |
+
+**Evidence breakdown table**: When anomalies have `ConfidenceScore`, a second table lists per-anomaly evidence with physical quantity, measured value, p-value, and human-readable annotation.
+
+**Group summaries**: When spatial groups exist, Fisher's combined p-value and per-detector contributions are shown.
 
 ---
 
@@ -1341,7 +1377,7 @@ flowchart LR
 
 ## 14. Testing Strategy
 
-491 tests across 31 test files, using real data and real APIs (no mocks):
+651 tests across 33 test files, using real data and real APIs (no mocks):
 
 | Test File | Count | Coverage |
 |---|---|---|
@@ -1354,7 +1390,8 @@ flowchart LR
 | `test_galaxy_detector.py` | 6 | Galaxy tidal features, mergers, color anomalies on synthetic data |
 | `test_genome.py` | 15 | Genome creation, mutation, crossover, distance, serialization, 43 genes, 10 presets |
 | `test_llm_hypothesis.py` | 7 | Hypothesis generation, debate, consensus, provider discovery (real APIs) |
-| `test_pipeline.py` | 66 | RunManager, DiscoveryReport, PipelineConfig, PatternResult, DetectionConfig.from_genome_dict, fitness evaluation, image saving, report generation, Anomaly dataclass, _extract_anomalies, anomaly table formatting, mosaic cutouts |
+| `test_pipeline.py` | 66 | RunManager, DiscoveryReport, PipelineConfig, PatternResult, DetectionConfig.from_genome_dict, fitness evaluation, image saving, report generation, Anomaly dataclass, _extract_anomalies (with confidence scoring and quality-floor filtering), anomaly table formatting, mosaic cutouts |
+| `test_confidence.py` | 108 | ConfidenceScore serialization, per-detector confidence methods (13 detectors), quality-floor filtering, BH-FDR correction, spatial grouping (Union-Find), group summary (Fisher combined p), integration with _extract_anomalies |
 | `test_proper_motion.py` | 6 | Co-moving groups, runaway stars, stream detection on synthetic catalogs |
 | `test_sersic.py` | 15 | Sersic b_n approximation, 1D profile, full analyzer (exponential disk, elliptical, noise, residuals, pixel scale) |
 | `test_stellar_population.py` | 10 | CMD analysis, MS/RGB/BS detection, insufficient data, SDSS color fallback |

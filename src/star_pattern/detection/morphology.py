@@ -53,6 +53,14 @@ class MorphologyAnalyzer:
         # Ellipticity from moments
         results["ellipticity"] = self._ellipticity(data, mask)
 
+        # Z-scores relative to typical galaxy CAS parameters
+        # Reference values from Conselice (2003) for normal galaxies:
+        # C ~ 3.0 +/- 0.8, A ~ 0.05 +/- 0.06, S ~ 0.05 +/- 0.04, Gini ~ 0.45 +/- 0.10
+        results["C_zscore"] = float((results["concentration"] - 3.0) / 0.8)
+        results["A_zscore"] = float((results["asymmetry"] - 0.05) / 0.06)
+        results["S_zscore"] = float((results["smoothness"] - 0.05) / 0.04)
+        results["gini_zscore"] = float((results["gini"] - 0.45) / 0.10)
+
         # Morphology score: higher = more unusual
         results["morphology_score"] = self._score(results)
 

@@ -16,6 +16,53 @@ from star_pattern.utils.logging import get_logger
 logger = get_logger("visualization.mosaic")
 
 
+def _load_fits_from_metadata(finding: PatternResult) -> FITSImage | None:
+    """Try to load a FITS image for a finding from disk.
+
+    Attempts two strategies:
+    1. Direct path: metadata["fits_path"] saved during the pipeline run.
+    2. Cache lookup: search the data cache by RA/Dec for older runs
+       that don't have fits_path.
+
+    Returns None if no image can be loaded.
+    """
+    from pathlib import Path
+
+    # Strategy 1: direct path from metadata
+    fits_path = finding.metadata.get("fits_path")
+    if fits_path:
+        p = Path(fits_path)
+        if p.exists():
+            try:
+                return FITSImage.from_file(p)
+            except Exception as e:
+                logger.debug(f"Failed to load FITS from {p}: {e}")
+
+    # Strategy 2: look up in data cache by RA/Dec.
+    # Only attempt if metadata shows images were saved during the run
+    # (prevents spurious cache hits in tests or image-free runs).
+    if not finding.metadata.get("image_paths"):
+        return None
+
+    ra = getattr(finding, "region_ra", None)
+    dec = getattr(finding, "region_dec", None)
+    if ra is None or dec is None:
+        return None
+
+    try:
+        from star_pattern.data.cache import DataCache
+        cache = DataCache()
+        # Try common bands in priority order
+        for band in ("r", "i", "g", "z"):
+            cached = cache.get_path("sdss", ra, dec, 3.0, band=band)
+            if cached is not None:
+                return FITSImage.from_file(cached)
+    except Exception as e:
+        logger.debug(f"Cache lookup failed for ({ra:.3f}, {dec:.3f}): {e}")
+
+    return None
+
+
 def _extract_sub_detections(details: dict) -> dict[str, int]:
     """Extract per-detector object counts from a finding's details dict.
 
@@ -412,6 +459,9 @@ def _collect_top_anomalies(
     padded_images = images if images else [None] * len(findings)
     image_map: dict[int, FITSImage | None] = {}
     for f, img in zip(findings, padded_images):
+        if img is None:
+            # Fallback: reload from FITS cache path stored in metadata
+            img = _load_fits_from_metadata(f)
         image_map[id(f)] = img
 
     numbered = _assign_finding_numbers(findings)
@@ -423,8 +473,14 @@ def _collect_top_anomalies(
         for anomaly in finding.anomalies:
             all_items.append((finding_num, tag, finding, img, anomaly))
 
-    # Sort by anomaly score descending
-    all_items.sort(key=lambda x: x[4].score, reverse=True)
+    # Sort by confidence (descending), fall back to score
+    def _sort_key(item: tuple) -> float:
+        anomaly = item[4]
+        if anomaly.confidence is not None:
+            return anomaly.confidence.confidence
+        return anomaly.score
+
+    all_items.sort(key=_sort_key, reverse=True)
 
     # Extended feature types: tidal features, sersic residuals, and
     # multiscale objects are diffuse structures that won't pass a
@@ -672,13 +728,20 @@ def _draw_overview_panel(
     anomaly_items: list[tuple[int, str, PatternResult, FITSImage | None, Any]],
 ) -> None:
     """Draw overview panel showing full image with numbered anomaly positions."""
-    # Use the first available image
+    # Use the first available image (try fallback from cache if needed)
     padded_images = images if images else [None] * len(findings)
     overview_image = None
-    for img in padded_images:
+    for i, img in enumerate(padded_images):
         if img is not None:
             overview_image = img
             break
+    if overview_image is None:
+        # Fallback: try loading from FITS cache paths in metadata
+        for f in findings:
+            loaded = _load_fits_from_metadata(f)
+            if loaded is not None:
+                overview_image = loaded
+                break
 
     if overview_image is not None:
         try:
@@ -745,14 +808,16 @@ _ANOMALY_DISPLAY_MAP: dict[str, str] = {
 def create_discovery_mosaic(
     findings: list[PatternResult],
     images: list[FITSImage | None] | None = None,
-    max_panels: int = 25,
+    max_panels: int = 100,
 ) -> Figure:
     """Create an anomaly-centric mosaic of discovery findings.
 
-    Shows cutouts centered on the top anomalies (sorted by score),
-    plus an overview panel showing all anomaly positions on the
-    full-field image. Falls back to full-field finding panels when
-    no per-anomaly data is available.
+    Shows cutouts centered on anomalies passing quality floors (sorted
+    by confidence descending, falling back to score). Panel count is
+    dynamic: all quality-passing anomalies up to max_panels (100 for
+    system protection). Uses compact 6-column layout when >30 panels.
+    Falls back to full-field finding panels when no per-anomaly data
+    is available.
     """
     if not findings:
         fig, ax = plt.subplots(figsize=(6, 2))
@@ -779,11 +844,13 @@ def create_discovery_mosaic(
         return _create_finding_mosaic(findings, images, max_panels)
 
     # Layout: 1 overview panel + N anomaly cutout panels
+    # Compact layout (6 cols, smaller panels) when >30 panels
     n_cutouts = len(anomaly_items)
     n_panels = n_cutouts + 1  # +1 for overview
-    n_cols = min(4, n_panels)
+    compact = n_cutouts > 30
+    n_cols = min(6 if compact else 4, n_panels)
     n_rows = int(np.ceil(n_panels / n_cols))
-    panel_size = 5.0
+    panel_size = 3.5 if compact else 5.0
 
     fig, axes = plt.subplots(
         n_rows, n_cols,
@@ -809,14 +876,19 @@ def create_discovery_mosaic(
             spine.set_linewidth(0.5)
             spine.set_zorder(10)
 
-        # Label: anomaly number + type
+        # Label: anomaly number + type + confidence
         atype = _ANOMALY_DISPLAY_MAP.get(
             anomaly.anomaly_type,
             anomaly.anomaly_type.replace("_", " ").capitalize(),
         )
+        conf_str = ""
+        if anomaly.confidence is not None:
+            conf_str = f"\nconf={anomaly.confidence.confidence:.3f}"
+        label_size = 5 if compact else 6
         ax.text(
-            0.02, 0.97, f"A{idx + 1}: {atype}\n(F{finding_num} [{tag}])",
-            ha="left", va="top", fontsize=6, fontweight="bold",
+            0.02, 0.97,
+            f"A{idx + 1}: {atype}{conf_str}\n(F{finding_num} [{tag}])",
+            ha="left", va="top", fontsize=label_size, fontweight="bold",
             color="white", transform=ax.transAxes,
             bbox=dict(facecolor="black", alpha=0.7, edgecolor="none", pad=2),
             zorder=11,
@@ -889,6 +961,8 @@ def _create_finding_mosaic(
     padded_images = images if images else [None] * len(findings)
     image_map: dict[int, FITSImage | None] = {}
     for f, img in zip(findings, padded_images):
+        if img is None:
+            img = _load_fits_from_metadata(f)
         image_map[id(f)] = img
 
     # Assign finding numbers

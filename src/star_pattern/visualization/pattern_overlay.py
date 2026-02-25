@@ -1368,14 +1368,35 @@ def create_evolution_summary(
         best = [g.get("best_fitness", 0) for g in gen_hist]
         mean = [g.get("mean_fitness", 0) for g in gen_hist]
         label = f"Cycle {evolution_history[i].get('cycle', i) if i < len(evolution_history) else i}"
-        ax.plot(gens, best, "-", color=color, linewidth=1.5, label=label)
-        ax.plot(gens, mean, "--", color=color, linewidth=0.8, alpha=0.5)
+        ax.plot(gens, best, "o-", color=color, linewidth=1.5, markersize=4, label=label)
+        ax.plot(gens, mean, "s--", color=color, linewidth=0.8, markersize=3, alpha=0.5)
     ax.set_xlabel("Generation", fontsize=9)
     ax.set_ylabel("Fitness", fontsize=9)
     ax.set_title("Per-generation fitness (solid=best, dashed=mean)")
     if ax.get_legend_handles_labels()[1]:
         ax.legend(fontsize=7, loc="lower right", framealpha=0.7)
     ax.grid(True, alpha=0.3)
+
+    # If every cycle ran only 1 generation, replot as per-cycle view
+    all_single = all(len(h) <= 1 for h in generation_histories if h)
+    if all_single and any(generation_histories):
+        ax.clear()
+        cycles_x, best_y, mean_y = [], [], []
+        for i, gen_hist in enumerate(generation_histories):
+            if not gen_hist:
+                continue
+            c = evolution_history[i].get("cycle", i) if i < len(evolution_history) else i
+            cycles_x.append(c)
+            best_y.append(gen_hist[0].get("best_fitness", 0))
+            mean_y.append(gen_hist[0].get("mean_fitness", 0))
+        if cycles_x:
+            ax.plot(cycles_x, best_y, "o-", color="#e74c3c", linewidth=1.5, markersize=5, label="Best")
+            ax.plot(cycles_x, mean_y, "s--", color="#3498db", linewidth=1, markersize=4, alpha=0.7, label="Mean")
+            ax.legend(fontsize=7, loc="lower right", framealpha=0.7)
+        ax.set_xlabel("Pipeline cycle", fontsize=9)
+        ax.set_ylabel("Fitness", fontsize=9)
+        ax.set_title("Per-cycle fitness (1 gen/cycle)")
+        ax.grid(True, alpha=0.3)
 
     # ---- [0,1]: Best fitness trend across cycles ----
     ax = axes[0, 1]
@@ -1412,7 +1433,7 @@ def create_evolution_summary(
             gens = [g.get("generation", j) for j, g in enumerate(gen_hist)]
             valid_rates = [r if r is not None else 0 for r in rates]
             label = f"Cycle {evolution_history[i].get('cycle', i) if i < len(evolution_history) else i}"
-            ax.plot(gens, valid_rates, "-", color=color, linewidth=1.5, label=label)
+            ax.plot(gens, valid_rates, "o-", color=color, linewidth=1.5, markersize=4, label=label)
     if not has_mutation_data:
         ax.text(
             0.5, 0.5, "No mutation rate data",
@@ -1425,6 +1446,24 @@ def create_evolution_summary(
     if ax.get_legend_handles_labels()[1]:
         ax.legend(fontsize=7, loc="upper right", framealpha=0.7)
     ax.grid(True, alpha=0.3)
+
+    if all_single and any(generation_histories):
+        ax.clear()
+        cycles_x, rates_y = [], []
+        for i, gen_hist in enumerate(generation_histories):
+            if not gen_hist:
+                continue
+            rate = gen_hist[0].get("mutation_rate")
+            if rate is not None:
+                c = evolution_history[i].get("cycle", i) if i < len(evolution_history) else i
+                cycles_x.append(c)
+                rates_y.append(rate)
+        if cycles_x:
+            ax.plot(cycles_x, rates_y, "o-", color="#e74c3c", linewidth=1.5, markersize=5)
+        ax.set_xlabel("Pipeline cycle", fontsize=9)
+        ax.set_ylabel("Mutation rate", fontsize=9)
+        ax.set_title("Mutation rate across cycles (1 gen/cycle)")
+        ax.grid(True, alpha=0.3)
 
     # ---- [1,1]: Fitness component breakdown ----
     ax = axes[1, 1]

@@ -226,6 +226,7 @@ class WaveletAnalyzer:
                         "y": mean_y,
                         "area_px": int(area),
                         "peak_significance": peak_sig,
+                        "peak_snr": peak_sig,
                         "is_positive": bool(
                             np.mean(detail[sl][local_region]) > 0
                         ),

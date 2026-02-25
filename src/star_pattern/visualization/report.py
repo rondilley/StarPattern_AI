@@ -478,27 +478,84 @@ def _format_anomaly_props(a: Anomaly) -> str:
     return ", ".join(parts) if parts else "--"
 
 
+def _format_confidence_str(a: Anomaly) -> str:
+    """Format confidence score for table display."""
+    if a.confidence is None:
+        return "--"
+    conf = a.confidence
+    return f"{conf.confidence:.3f} (p={conf.p_corrected:.1e})"
+
+
 def _format_anomaly_table(anomalies: list[Anomaly]) -> list[str]:
     """Format anomalies as a markdown table."""
     if not anomalies:
         return []
 
+    # Check if any anomaly has confidence
+    has_confidence = any(a.confidence is not None for a in anomalies)
+    has_groups = any(a.group_id is not None for a in anomalies)
+
     lines: list[str] = []
     lines.append(f"#### Detected anomalies ({len(anomalies)} total)")
     lines.append("")
-    lines.append("| # | Type | Location (RA, Dec) | Detector | Score | Key properties |")
-    lines.append("|---|------|--------------------|----------|-------|----------------|")
+
+    if has_confidence:
+        header = "| # | Type | Location (RA, Dec) | Detector | Score | Confidence | Key properties |"
+        sep = "|---|------|--------------------|----------|-------|------------|----------------|"
+    else:
+        header = "| # | Type | Location (RA, Dec) | Detector | Score | Key properties |"
+        sep = "|---|------|--------------------|----------|-------|----------------|"
+    lines.append(header)
+    lines.append(sep)
 
     for i, a in enumerate(anomalies, 1):
         display = _ANOMALY_DISPLAY_NAMES.get(a.anomaly_type, a.anomaly_type.replace("_", " ").capitalize())
         loc = _format_anomaly_location(a)
         score_str = _format_anomaly_score(a)
         props = _format_anomaly_props(a)
-        lines.append(
-            f"| A{i} | {display} | {loc} | {a.detector} | {score_str} | {props} |"
-        )
+        grp = f" [{a.group_id}]" if a.group_id else ""
+        if has_confidence:
+            conf_str = _format_confidence_str(a)
+            lines.append(
+                f"| A{i}{grp} | {display} | {loc} | {a.detector} "
+                f"| {score_str} | {conf_str} | {props} |"
+            )
+        else:
+            lines.append(
+                f"| A{i}{grp} | {display} | {loc} | {a.detector} | {score_str} | {props} |"
+            )
 
     lines.append("")
+
+    # Per-anomaly evidence breakdown (annotation from confidence)
+    annotations = [
+        (i, a) for i, a in enumerate(anomalies, 1)
+        if a.confidence is not None and a.confidence.annotation
+    ]
+    if annotations:
+        lines.append("#### Evidence breakdown")
+        lines.append("")
+        lines.append("| # | Statistical basis |")
+        lines.append("|---|-------------------|")
+        for i, a in annotations:
+            grp = f" [{a.group_id}]" if a.group_id else ""
+            lines.append(f"| A{i}{grp} | {a.confidence.annotation} |")
+        lines.append("")
+
+    # Group summaries (pre-build index to avoid O(g*n) repeated scans)
+    if has_groups:
+        from star_pattern.evaluation.confidence import compute_group_summary_from_members
+
+        groups_by_id: dict[str, list] = {}
+        for a in anomalies:
+            if a.group_id:
+                groups_by_id.setdefault(a.group_id, []).append(a)
+        for gid, members in groups_by_id.items():
+            summary = compute_group_summary_from_members(members, gid)
+            if summary.get("n_members", 0) >= 2:
+                lines.append(f"**{summary.get('summary_text', '')}**")
+                lines.append("")
+
     return lines
 
 
@@ -613,7 +670,7 @@ def _format_finding(
     if f.cross_matches:
         lines.append(f"Matches {len(f.cross_matches)} known object(s):")
         lines.append("")
-        for m in f.cross_matches[:5]:
+        for m in f.cross_matches:
             name = m.get("name", "N/A")
             otype = m.get("object_type", "")
             decoded = _decode_simbad_type(otype) if otype else "unknown type"
@@ -841,7 +898,7 @@ class DiscoveryReport:
             lines.append(
                 "|---------|------|-----|-----|-------|------------|------------|"
             )
-            for finding_num, _tag, f in low_findings[:20]:
+            for finding_num, _tag, f in low_findings:
                 ev = f.metadata.get("local_evaluation", {})
                 verdict = ev.get("verdict", "?")
                 rating = ev.get("significance_rating", 0)
@@ -853,11 +910,6 @@ class DiscoveryReport:
                     f"| {f.region_dec:.3f} | {f.anomaly_score:.3f} "
                     f"| {verdict.capitalize()} | {_confidence_label(rating)} "
                     f"({rating}/10) |"
-                )
-            if len(low_findings) > 20:
-                lines.append(
-                    f"| ... | *{len(low_findings) - 20} more omitted* "
-                    f"| | | | | |"
                 )
             lines.append("")
 
@@ -950,10 +1002,26 @@ class DiscoveryReport:
         run_metadata: dict[str, Any] | None = None,
         images: list[Any] | None = None,
     ) -> dict[str, Path]:
-        """Generate all report formats."""
-        paths = {}
-        paths["markdown"] = self.generate_markdown_report(findings, run_metadata)
-        paths["json"] = self.generate_json_report(findings, run_metadata)
+        """Generate all report formats.
+
+        Each step is fault-isolated so that a failure in one
+        (e.g. mosaic) does not prevent the others (markdown, JSON).
+        """
+        import traceback
+
+        paths: dict[str, Path] = {}
+
+        # Markdown report
+        try:
+            paths["markdown"] = self.generate_markdown_report(findings, run_metadata)
+        except Exception as e:
+            logger.warning(f"Markdown report failed: {e}\n{traceback.format_exc()}")
+
+        # JSON report
+        try:
+            paths["json"] = self.generate_json_report(findings, run_metadata)
+        except Exception as e:
+            logger.warning(f"JSON report failed: {e}\n{traceback.format_exc()}")
 
         # Generate plots
         try:
@@ -961,12 +1029,12 @@ class DiscoveryReport:
                 create_discovery_mosaic,
                 create_score_histogram,
             )
+            import matplotlib.pyplot as plt
 
             mosaic = create_discovery_mosaic(findings, images=images)
             mosaic_path = self.output_dir / "mosaic.png"
             mosaic.savefig(str(mosaic_path), dpi=150, bbox_inches="tight")
             paths["mosaic"] = mosaic_path
-            import matplotlib.pyplot as plt
             plt.close(mosaic)
 
             hist = create_score_histogram(findings)
@@ -976,6 +1044,6 @@ class DiscoveryReport:
             plt.close(hist)
 
         except Exception as e:
-            logger.warning(f"Plot generation failed: {e}")
+            logger.warning(f"Plot generation failed: {e}\n{traceback.format_exc()}")
 
         return paths

@@ -30,6 +30,12 @@ from star_pattern.detection.compositional import ComposedPipeline, OperationSpec
 from star_pattern.discovery.evolutionary import EvolutionaryDiscovery
 from star_pattern.discovery.genome import DetectionGenome
 from star_pattern.evaluation.metrics import Anomaly, PatternResult
+from star_pattern.evaluation.confidence import (
+    ConfidenceEvaluator, ConfidenceScore,
+    apply_fdr_correction, assign_spatial_groups,
+    passes_quality_floor,
+    _MAX_PER_DETECTOR_SYSTEM, _MAX_PER_REGION_SYSTEM,
+)
 from star_pattern.evaluation.cross_reference import CatalogCrossReferencer
 from star_pattern.pipeline.active_learning import ActiveLearner
 from star_pattern.utils.run_manager import RunManager
@@ -37,11 +43,8 @@ from star_pattern.utils.logging import get_logger
 
 logger = get_logger("pipeline.autonomous")
 
-# Maximum anomalies per region to keep reports manageable
-_MAX_ANOMALIES_PER_REGION = 50
-# Maximum anomalies extracted per detector type before global ranking.
-# Prevents one noisy detector from filling all slots.
-_MAX_PER_DETECTOR = 8
+# Confidence evaluator (singleton, stateless)
+_confidence_evaluator = ConfidenceEvaluator()
 
 
 def _pixel_to_sky(
@@ -66,8 +69,11 @@ def _extract_anomalies(
     spatially-located detection. Image-based detectors use WCS for
     sky coordinates; catalog-based detectors already have RA/Dec.
 
-    Returns at most _MAX_ANOMALIES_PER_REGION anomalies, sorted by
-    score descending.
+    Quality-floor filtering: each anomaly gets a ConfidenceScore based
+    on its detector's physical measurement. Only anomalies passing
+    their detector's quality floor (p-value threshold) are kept.
+    Region-wide BH-FDR correction is applied across all surviving
+    anomalies. System-protection limits (500) prevent OOM.
     """
     anomalies: list[Anomaly] = []
 
@@ -104,8 +110,9 @@ def _extract_anomalies(
             sky_ra=ra, sky_dec=dec,
             score=ring.get("completeness", ring.get("strength", 0)),
             properties={
-                k: ring[k] for k in ("radius", "completeness", "is_complete_ring")
-                if k in ring
+                k: ring[k] for k in (
+                    "radius", "completeness", "is_complete_ring", "snr",
+                ) if k in ring
             },
         ))
 
@@ -121,8 +128,9 @@ def _extract_anomalies(
             sky_ra=ra, sky_dec=dec,
             score=od.get("sigma", od.get("significance", 0)),
             properties={
-                k: od[k] for k in ("radius_px", "n_sources", "sigma", "significance")
-                if k in od
+                k: od[k] for k in (
+                    "radius_px", "n_sources", "sigma", "significance",
+                ) if k in od
             },
         ))
 
@@ -138,12 +146,14 @@ def _extract_anomalies(
             sky_ra=ra, sky_dec=dec,
             score=ms.get("n_scales", ms.get("score", 0)),
             properties={
-                k: ms[k] for k in ("min_scale", "max_scale", "n_scales")
-                if k in ms
+                k: ms[k] for k in (
+                    "min_scale", "max_scale", "n_scales",
+                    "peak_snr", "max_significance",
+                ) if k in ms
             },
         ))
 
-    # Galaxy tidal features (keys: x, y, area, orientation, strength)
+    # Galaxy tidal features
     galaxy = detection.get("galaxy", {})
     for feat in galaxy.get("tidal_features", []):
         fx, fy = feat.get("x", 0), feat.get("y", 0)
@@ -155,26 +165,49 @@ def _extract_anomalies(
             sky_ra=ra, sky_dec=dec,
             score=feat.get("strength", feat.get("snr", 0)),
             properties={
-                k: feat[k] for k in ("area", "orientation", "strength")
-                if k in feat
+                k: feat[k] for k in (
+                    "area", "orientation", "strength", "tidal_snr",
+                ) if k in feat
             },
         ))
 
     # Galaxy merger nuclei
     nuclei = galaxy.get("merger_nuclei", [])
+    if not nuclei:
+        # Also check merger_candidates from the detector
+        for mc in galaxy.get("merger_candidates", []):
+            n1 = mc.get("nucleus_1", {})
+            nx, ny = n1.get("x", 0), n1.get("y", 0)
+            ra, dec = _pixel_to_sky(image, nx, ny)
+            anomalies.append(Anomaly(
+                anomaly_type="merger",
+                detector="galaxy",
+                pixel_x=nx, pixel_y=ny,
+                sky_ra=ra, sky_dec=dec,
+                score=mc.get("asymmetry", 0),
+                properties={
+                    "n_nuclei": 2,
+                    "asymmetry": mc.get("asymmetry", 0),
+                    "asymmetry_sigma": mc.get("asymmetry_sigma", 0),
+                },
+            ))
     if nuclei:
-        # Treat as a single anomaly centered on the first nucleus
         n0 = nuclei[0]
         nx, ny = n0.get("x", 0), n0.get("y", 0)
         ra, dec = _pixel_to_sky(image, nx, ny)
         asymmetry = galaxy.get("asymmetry", 0)
+        asymmetry_sigma = galaxy.get("asymmetry_sigma", 0)
         anomalies.append(Anomaly(
             anomaly_type="merger",
             detector="galaxy",
             pixel_x=nx, pixel_y=ny,
             sky_ra=ra, sky_dec=dec,
             score=asymmetry,
-            properties={"n_nuclei": len(nuclei), "asymmetry": asymmetry},
+            properties={
+                "n_nuclei": len(nuclei),
+                "asymmetry": asymmetry,
+                "asymmetry_sigma": asymmetry_sigma,
+            },
         ))
 
     # Classical Hough arcs (uses center_x/center_y keys)
@@ -191,11 +224,18 @@ def _extract_anomalies(
             pixel_x=ax, pixel_y=ay,
             sky_ra=ra, sky_dec=dec,
             score=arc.get("strength", arc.get("votes", 0)),
-            properties={k: arc[k] for k in ("radius", "strength", "votes") if k in arc},
+            properties={
+                k: arc[k] for k in ("radius", "strength", "votes") if k in arc
+            } | {
+                "hough_votes": arc.get("strength", 0),
+                "gabor_energy": classical.get("gabor_energy", 0),
+            },
         ))
 
-    # Sersic residual features (use peak_snr as score)
+    # Sersic residual features
     sersic = detection.get("sersic", {})
+    sersic_fit = sersic.get("fit", {})
+    chi2_reduced = sersic_fit.get("reduced_chi2", 0)
     for feat in sersic.get("residual_features", []):
         fx, fy = feat.get("x", 0), feat.get("y", 0)
         ra, dec = _pixel_to_sky(image, fx, fy)
@@ -208,6 +248,9 @@ def _extract_anomalies(
             properties={
                 k: feat[k] for k in ("area_px", "peak_snr", "dist_in_re", "type")
                 if k in feat
+            } | {
+                "residual_snr": abs(feat.get("peak_snr", 0)),
+                "chi2_reduced": chi2_reduced,
             },
         ))
 
@@ -223,7 +266,8 @@ def _extract_anomalies(
             score=grp.get("significance", grp.get("score", 0)),
             properties={
                 k: grp[k] for k in (
-                    "n_members", "mean_pmra", "mean_pmdec", "pm_dispersion",
+                    "n_members", "mean_pmra", "mean_pmdec",
+                    "pm_dispersion", "expected_field",
                 ) if k in grp
             },
         ))
@@ -275,6 +319,8 @@ def _extract_anomalies(
     # Variability candidates
     variability = detection.get("variability", {})
     for vc in variability.get("variable_candidates", []):
+        var_idx = vc.get("variability_index", {})
+        chi2_var = var_idx.get("chi2_reduced", 0) if isinstance(var_idx, dict) else 0
         anomalies.append(Anomaly(
             anomaly_type="variable_star",
             detector="variability",
@@ -286,9 +332,11 @@ def _extract_anomalies(
                     "classification", "score", "best_period",
                     "variability_index", "source_id",
                 ) if k in vc
-            },
+            } | {"chi2_variability": chi2_var},
         ))
     for pc in variability.get("periodic_candidates", []):
+        periodogram = pc.get("periodogram", {})
+        fap = periodogram.get("fap") if isinstance(periodogram, dict) else pc.get("fap")
         anomalies.append(Anomaly(
             anomaly_type="periodic_variable",
             detector="variability",
@@ -299,15 +347,12 @@ def _extract_anomalies(
                 k: pc[k] for k in (
                     "period", "power", "fap", "source_id",
                 ) if k in pc
-            },
+            } | ({"fap": fap} if fap is not None else {}),
         ))
 
     # Stellar population candidates
-    # Blue stragglers are under population["blue_stragglers"]["candidates"]
-    # with color/mag/color_offset keys (no ra/dec -- CMD-based, not spatial)
-    # Red giants have only aggregate stats (no individual candidates)
-    # These are recorded as region-level anomalies without spatial coords
     population = detection.get("population", {})
+    n_sources_with_color = population.get("n_sources_with_color", 0)
     bs_data = population.get("blue_stragglers", {})
     n_bs = bs_data.get("n_blue_stragglers", 0)
     if n_bs > 0:
@@ -318,6 +363,7 @@ def _extract_anomalies(
             properties={
                 "n_blue_stragglers": n_bs,
                 "bs_fraction": bs_data.get("bs_fraction", 0),
+                "n_sources_with_color": n_sources_with_color,
             },
         ))
     n_rg = population.get("n_red_giants", 0)
@@ -330,112 +376,86 @@ def _extract_anomalies(
             properties={
                 "n_red_giants": n_rg,
                 "rgb_fraction": rg_data.get("rgb_fraction", 0),
+                "n_sources_with_color": n_sources_with_color,
             },
         ))
 
     # Temporal change detections (multi-epoch image differencing)
     temporal = detection.get("temporal", {})
     if isinstance(temporal, dict) and "error" not in temporal:
-        for src in temporal.get("new_sources", []):
-            anomalies.append(Anomaly(
-                anomaly_type="temporal_new_source",
-                detector="temporal",
-                sky_ra=src.get("sky_ra"),
-                sky_dec=src.get("sky_dec"),
-                pixel_x=src.get("cx"),
-                pixel_y=src.get("cy"),
-                score=src.get("peak_snr", 0),
-                properties={
-                    "peak_snr": src.get("peak_snr", 0),
-                    "n_epochs_detected": src.get("n_epochs_detected", 0),
-                },
-            ))
-        for src in temporal.get("disappeared", []):
-            anomalies.append(Anomaly(
-                anomaly_type="temporal_disappeared",
-                detector="temporal",
-                sky_ra=src.get("sky_ra"),
-                sky_dec=src.get("sky_dec"),
-                pixel_x=src.get("cx"),
-                pixel_y=src.get("cy"),
-                score=src.get("peak_snr", 0),
-                properties={
-                    "peak_snr": src.get("peak_snr", 0),
-                    "n_epochs_detected": src.get("n_epochs_detected", 0),
-                },
-            ))
-        for src in temporal.get("brightenings", []):
-            anomalies.append(Anomaly(
-                anomaly_type="temporal_brightening",
-                detector="temporal",
-                sky_ra=src.get("sky_ra"),
-                sky_dec=src.get("sky_dec"),
-                pixel_x=src.get("cx"),
-                pixel_y=src.get("cy"),
-                score=src.get("peak_snr", 0),
-                properties={
-                    "peak_snr": src.get("peak_snr", 0),
-                    "n_epochs_detected": src.get("n_epochs_detected", 0),
-                },
-            ))
-        for src in temporal.get("fadings", []):
-            anomalies.append(Anomaly(
-                anomaly_type="temporal_fading",
-                detector="temporal",
-                sky_ra=src.get("sky_ra"),
-                sky_dec=src.get("sky_dec"),
-                pixel_x=src.get("cx"),
-                pixel_y=src.get("cy"),
-                score=src.get("peak_snr", 0),
-                properties={
-                    "peak_snr": src.get("peak_snr", 0),
-                    "n_epochs_detected": src.get("n_epochs_detected", 0),
-                },
-            ))
-        for src in temporal.get("moving_objects", []):
-            anomalies.append(Anomaly(
-                anomaly_type="temporal_moving",
-                detector="temporal",
-                sky_ra=src.get("sky_ra"),
-                sky_dec=src.get("sky_dec"),
-                pixel_x=src.get("cx"),
-                pixel_y=src.get("cy"),
-                score=src.get("peak_snr", 0),
-                properties={
-                    "peak_snr": src.get("peak_snr", 0),
-                    "n_epochs_detected": src.get("n_epochs_detected", 0),
-                },
-            ))
+        _temporal_keys = [
+            ("new_sources", "temporal_new_source"),
+            ("disappeared", "temporal_disappeared"),
+            ("brightenings", "temporal_brightening"),
+            ("fadings", "temporal_fading"),
+            ("moving_objects", "temporal_moving"),
+        ]
+        for src_key, anom_type in _temporal_keys:
+            for src in temporal.get(src_key, []):
+                anomalies.append(Anomaly(
+                    anomaly_type=anom_type,
+                    detector="temporal",
+                    sky_ra=src.get("sky_ra"),
+                    sky_dec=src.get("sky_dec"),
+                    pixel_x=src.get("cx"),
+                    pixel_y=src.get("cy"),
+                    score=src.get("peak_snr", 0),
+                    properties={
+                        "peak_snr": src.get("peak_snr", 0),
+                        "n_epochs_detected": src.get("n_epochs_detected", 0),
+                    },
+                ))
 
-    # --- Normalize scores and cap per detector ---
-    # Raw scores from different detectors use incompatible scales:
-    #   - galaxy strength: raw pixel flux sums (100k+)
-    #   - overdensity sigma: statistical significance (1-10)
-    #   - wavelet n_scales: integer count (1-5)
-    # Normalize each detector's scores to [0, 1] range so the
-    # global sort produces a diverse set of anomalies.
+    # --- Confidence scoring and quality-floor filtering ---
+    # Compute per-anomaly ConfidenceScore grounded in physical measurements.
+    # System-protection cap per detector first (bug guard).
     by_detector: dict[str, list[Anomaly]] = {}
     for a in anomalies:
         by_detector.setdefault(a.detector, []).append(a)
 
-    normalized: list[Anomaly] = []
+    scored: list[Anomaly] = []
     for det_name, det_anomalies in by_detector.items():
-        # Sort within detector by raw score, take top _MAX_PER_DETECTOR
+        # Sort within detector by raw score descending
         det_anomalies.sort(key=lambda a: a.score, reverse=True)
-        det_anomalies = det_anomalies[:_MAX_PER_DETECTOR]
+        # System protection limit per detector
+        det_anomalies = det_anomalies[:_MAX_PER_DETECTOR_SYSTEM]
 
-        # Normalize to [0, 1] within this detector.
-        # Preserve raw score in properties for display purposes.
-        max_score = max((a.score for a in det_anomalies), default=1)
-        if max_score > 0:
-            for a in det_anomalies:
-                a.properties["raw_score"] = a.score
-                a.score = a.score / max_score
-        normalized.extend(det_anomalies)
+        _confidence_evaluator.score_anomalies_batch(det_anomalies)
 
-    # Global sort by normalized score, cap at total limit
-    normalized.sort(key=lambda a: a.score, reverse=True)
-    return normalized[:_MAX_ANOMALIES_PER_REGION]
+        # Quality floor: keep only anomalies whose p-value passes
+        # the detector's threshold
+        passing = [
+            a for a in det_anomalies
+            if a.confidence is not None and passes_quality_floor(a.confidence, det_name)
+        ]
+
+        # Normalize scores within detector to [0, 1] for backward compat.
+        # Preserve raw score in properties for display.
+        if passing:
+            max_score = max((a.score for a in passing), default=1)
+            if max_score > 0:
+                for a in passing:
+                    a.properties["raw_score"] = a.score
+                    a.score = a.score / max_score
+
+        scored.extend(passing)
+
+    # Region-wide FDR correction
+    apply_fdr_correction(scored)
+
+    # Spatial grouping of co-located anomalies
+    assign_spatial_groups(scored)
+
+    # Sort by confidence (descending), fall back to score
+    def _sort_key(a: Anomaly) -> float:
+        if a.confidence is not None:
+            return a.confidence.confidence
+        return a.score
+
+    scored.sort(key=_sort_key, reverse=True)
+
+    # System protection limit for the whole region
+    return scored[:_MAX_PER_REGION_SYSTEM]
 
 
 class AutonomousDiscovery:
@@ -552,6 +572,12 @@ class AutonomousDiscovery:
         self.active_learner = ActiveLearner(
             meta_detector=self._meta_detector,
         )
+
+        # Distributed bridge (lazy init for master mode)
+        self._distributed_bridge = None
+        if config.distributed.mode == "master":
+            from star_pattern.distributed.bridge import DistributedBridge
+            self._distributed_bridge = DistributedBridge(config.distributed)
 
         # Graceful shutdown handler
         signal.signal(signal.SIGINT, self._handle_shutdown)
@@ -817,12 +843,24 @@ class AutonomousDiscovery:
                 result.metadata["local_evaluation"] = evaluation
                 result.metadata["significance_rating"] = evaluation["significance_rating"]
 
+                # Attach region-level confidence from evaluator
+                region_conf = evaluation.get("region_confidence")
+                if region_conf is not None:
+                    result.region_confidence = region_conf
+
                 # Cache for summary image generation
                 self._last_classification = classification
                 self._last_evaluation = evaluation
 
                 # Attach FITS image for mosaic rendering (not serialized)
                 result._fits_image = image
+
+                # Store FITS file path for post-run report regeneration.
+                # The _fits_image attribute is lost when findings are
+                # serialized to JSON; this path lets the mosaic reload
+                # the image from the data cache on disk.
+                if image is not None and getattr(image, "path", None) is not None:
+                    result.metadata["fits_path"] = str(image.path)
 
                 # Save overlay images
                 try:
@@ -1110,6 +1148,20 @@ class AutonomousDiscovery:
         if self.use_llm:
             self._init_llm()
 
+        # Connect to slave workers if in master mode
+        if self._distributed_bridge is not None:
+            try:
+                n_slaves = self._distributed_bridge.start()
+                logger.info(f"DISTRIBUTED: connected to {n_slaves} slave(s)")
+                if n_slaves == 0:
+                    logger.warning(
+                        "DISTRIBUTED: no slaves connected, falling back to standalone"
+                    )
+                    self._distributed_bridge = None
+            except Exception as e:
+                logger.error(f"DISTRIBUTED: bridge startup failed: {e}")
+                self._distributed_bridge = None
+
         start_time = time.time()
         max_seconds = max_hours * 3600 if max_hours else float("inf")
         max_cycles = self.config.max_cycles
@@ -1143,97 +1195,139 @@ class AutonomousDiscovery:
             )
             logger.info(f"{'='*60}")
 
+            # Collect completed results from distributed slaves
+            if self._distributed_bridge is not None:
+                try:
+                    completed = self._distributed_bridge.collect_results(timeout=1.0)
+                    for pr in completed:
+                        self.findings.append(pr)
+                        logger.info(f"  REMOTE: {pr}")
+                        if self.active_learner.should_query(pr):
+                            is_interesting = pr.debate_verdict == "real"
+                            self.active_learner.add_feedback(pr, is_interesting)
+                except Exception as e:
+                    logger.debug(f"Remote result collection: {e}")
+
+            # Determine if this cycle processes locally or dispatches remotely
+            dispatch_remote = (
+                self._distributed_bridge is not None
+                and self.cycle % self.config.distributed.local_cycle_interval != 0
+            )
+
             # PHASE: FETCHING
             logger.info("PHASE: FETCHING")
             region = self._get_next_region()
             self.searched_regions.append(region)
 
-            # Fetch data (wide-field or standard)
-            try:
-                if (
-                    self.wide_field_pipeline is not None
-                    and self._wide_field_radius is not None
-                ):
-                    region_data = self._fetch_wide_field(
-                        region, self._wide_field_radius
-                    )
-                else:
-                    include_temporal = (
-                        self.config.temporal.enabled
-                        and self.cycle % self.config.temporal.fetch_interval == 0
-                    )
-                    region_data = self.data_pipeline.fetch_region(
-                        region,
-                        include_temporal=include_temporal,
-                        temporal_config=self.config.temporal,
-                    )
-            except Exception as e:
-                logger.error(f"Data fetch failed: {e}")
-                continue
-
-            if self._shutdown:
-                logger.info("Shutdown: stopping after fetch phase.")
-                break
-
-            if not region_data.has_images():
-                # In survey mode, mark empty pixels visited without
-                # spending a cycle -- SDSS covers ~35% of the sky, so
-                # most survey pixels will have no data.
-                if self._survey is not None and hasattr(region, "_healpix_pixel"):
-                    self._survey.mark_visited(
-                        region._healpix_pixel, findings_count=0,  # type: ignore[attr-defined]
-                    )
-                    self.cycle -= 1  # Don't count empty survey pixels
-                    logger.info(
-                        f"No images at survey pixel "
-                        f"{region._healpix_pixel}, skipping "  # type: ignore[attr-defined]
-                        f"(not counted as cycle)"
-                    )
-                else:
-                    logger.info("No images found, skipping.")
-                continue
-
-            # PHASE: DETECTING + EVALUATING
-            logger.info(
-                f"PHASE: DETECTING ({len(region_data.images)} bands) "
-                f"at RA={region.ra:.4f} Dec={region.dec:.4f}"
+            include_temporal = (
+                self.config.temporal.enabled
+                and self.cycle % self.config.temporal.fetch_interval == 0
             )
-            new_findings = self._process_region(region_data)
 
-            if self._shutdown:
-                # Still save partial findings before exiting
+            if dispatch_remote:
+                # Dispatch to a slave -- slave does its own fetch + detect
+                logger.info(
+                    f"PHASE: DISPATCHING to slave "
+                    f"at RA={region.ra:.4f} Dec={region.dec:.4f}"
+                )
+                try:
+                    genome_dict = (
+                        self._current_genome.to_dict()
+                        if self._current_genome else {}
+                    )
+                    self._distributed_bridge.submit_region(
+                        region, self.config,
+                        genome_dict=genome_dict,
+                        include_temporal=include_temporal,
+                    )
+                except Exception as e:
+                    logger.warning(f"Remote dispatch failed: {e}, processing locally")
+                    dispatch_remote = False
+
+            if not dispatch_remote:
+                # Local processing (standalone or local cycle in master mode)
+                # Fetch data (wide-field or standard)
+                try:
+                    if (
+                        self.wide_field_pipeline is not None
+                        and self._wide_field_radius is not None
+                    ):
+                        region_data = self._fetch_wide_field(
+                            region, self._wide_field_radius
+                        )
+                    else:
+                        region_data = self.data_pipeline.fetch_region(
+                            region,
+                            include_temporal=include_temporal,
+                            temporal_config=self.config.temporal,
+                        )
+                except Exception as e:
+                    logger.error(f"Data fetch failed: {e}")
+                    continue
+
+                if self._shutdown:
+                    logger.info("Shutdown: stopping after fetch phase.")
+                    break
+
+                if not region_data.has_images():
+                    # In survey mode, mark empty pixels visited without
+                    # spending a cycle -- SDSS covers ~35% of the sky, so
+                    # most survey pixels will have no data.
+                    if self._survey is not None and hasattr(region, "_healpix_pixel"):
+                        self._survey.mark_visited(
+                            region._healpix_pixel, findings_count=0,  # type: ignore[attr-defined]
+                        )
+                        self.cycle -= 1  # Don't count empty survey pixels
+                        logger.info(
+                            f"No images at survey pixel "
+                            f"{region._healpix_pixel}, skipping "  # type: ignore[attr-defined]
+                            f"(not counted as cycle)"
+                        )
+                    else:
+                        logger.info("No images found, skipping.")
+                    continue
+
+                # PHASE: DETECTING + EVALUATING
+                logger.info(
+                    f"PHASE: DETECTING ({len(region_data.images)} bands) "
+                    f"at RA={region.ra:.4f} Dec={region.dec:.4f}"
+                )
+                new_findings = self._process_region(region_data)
+
+                if self._shutdown:
+                    # Still save partial findings before exiting
+                    if new_findings:
+                        self.findings.extend(new_findings)
+                    logger.info("Shutdown: stopping after detection phase.")
+                    break
+
+                # Always save an annotated summary for every region
+                self._save_region_summary(
+                    region_data, new_findings, elapsed_min,
+                )
+
                 if new_findings:
                     self.findings.extend(new_findings)
-                logger.info("Shutdown: stopping after detection phase.")
-                break
+                    for f in new_findings:
+                        logger.info(f"  FOUND: {f}")
 
-            # Always save an annotated summary for every region
-            self._save_region_summary(
-                region_data, new_findings, elapsed_min,
-            )
+                    # Save results
+                    self.run_manager.save_result(
+                        f"cycle_{self.cycle:04d}",
+                        {"findings": [f.to_dict() for f in new_findings]},
+                    )
+                else:
+                    logger.info(
+                        f"  No findings above threshold "
+                        f"(processed {len(region_data.images)} bands)"
+                    )
 
-            if new_findings:
-                self.findings.extend(new_findings)
-                for f in new_findings:
-                    logger.info(f"  FOUND: {f}")
-
-                # Save results
-                self.run_manager.save_result(
-                    f"cycle_{self.cycle:04d}",
-                    {"findings": [f.to_dict() for f in new_findings]},
-                )
-            else:
-                logger.info(
-                    f"  No findings above threshold "
-                    f"(processed {len(region_data.images)} bands)"
-                )
-
-            # Mark survey pixel as visited
-            if self._survey is not None and hasattr(region, "_healpix_pixel"):
-                self._survey.mark_visited(
-                    region._healpix_pixel,  # type: ignore[attr-defined]
-                    findings_count=len(new_findings),
-                )
+                # Mark survey pixel as visited
+                if self._survey is not None and hasattr(region, "_healpix_pixel"):
+                    self._survey.mark_visited(
+                        region._healpix_pixel,  # type: ignore[attr-defined]
+                        findings_count=len(new_findings),
+                    )
 
             if self._shutdown:
                 logger.info("Shutdown: stopping before checkpoint/strategy/evolution.")
@@ -1263,6 +1357,22 @@ class AutonomousDiscovery:
             ):
                 self._evolve_parameters()
 
+                # Push updated config to slaves after evolution
+                if (
+                    self._distributed_bridge is not None
+                    and self._current_genome is not None
+                ):
+                    try:
+                        from dataclasses import asdict
+                        det_config = asdict(self.config.detection)
+                        genome_dict = self._current_genome.to_dict()
+                        self._distributed_bridge.push_config_update(
+                            det_config, genome_dict,
+                        )
+                        logger.info("DISTRIBUTED: pushed config update to slaves")
+                    except Exception as e:
+                        logger.warning(f"Config push to slaves failed: {e}")
+
             # Log progress
             token_info = ""
             if self._token_tracker:
@@ -1282,6 +1392,20 @@ class AutonomousDiscovery:
                 f"regions searched: {len(self.searched_regions)}"
                 f"{token_info}{survey_info}"
             )
+
+        # Drain remaining results from distributed slaves
+        if self._distributed_bridge is not None:
+            try:
+                remaining = self._distributed_bridge.collect_results(timeout=30.0)
+                if remaining:
+                    self.findings.extend(remaining)
+                    logger.info(f"DISTRIBUTED: drained {len(remaining)} final results")
+            except Exception as e:
+                logger.warning(f"Final result drain failed: {e}")
+            try:
+                self._distributed_bridge.shutdown()
+            except Exception as e:
+                logger.warning(f"Bridge shutdown error: {e}")
 
         # Final save
         self._save_checkpoint()
@@ -1305,7 +1429,8 @@ class AutonomousDiscovery:
         try:
             self._generate_report()
         except Exception as e:
-            logger.warning(f"Report generation failed: {e}")
+            import traceback
+            logger.warning(f"Report generation failed: {e}\n{traceback.format_exc()}")
 
         logger.info(
             f"\nDiscovery complete: {len(self.findings)} findings in {self.cycle} cycles"

@@ -154,13 +154,15 @@ class GalaxyDetector:
                 if area < smooth_sigma * 2:
                     continue
                 ys, xs = np.where(region)
+                peak_strength = float(np.max(np.abs(response[region])))
                 features.append({
                     "type": "tidal",
                     "x": float(np.mean(xs)),
                     "y": float(np.mean(ys)),
                     "area": int(area),
                     "orientation": float(theta),
-                    "strength": float(np.max(np.abs(response[region]))),
+                    "strength": peak_strength,
+                    "tidal_snr": float(peak_strength / max(resp_std, 1e-10)),
                 })
 
         # Deduplicate nearby detections
@@ -268,6 +270,9 @@ class GalaxyDetector:
                     },
                     "separation_px": float(dist),
                     "asymmetry": asymmetry,
+                    "asymmetry_sigma": float(
+                        asymmetry / max(self.asymmetry_threshold, 1e-10)
+                    ),
                     "flux_ratio": float(
                         min(p1_brightness, p2_brightness)
                         / max(p1_brightness, p2_brightness)

@@ -361,12 +361,21 @@ class ClassicalDetector:
         fft_score = float(fft_result["dominant_frequency"])
         arc_score = float(arcs[0]["strength"]) if arcs else 0.0
 
+        # Top Hough arc votes (raw accumulator strength)
+        hough_votes = float(arcs[0]["strength"]) if arcs else 0.0
+        # Mean Gabor filter energy across the image
+        gabor_energy = float(np.mean(gabor_result["mean_energy"]))
+
         return {
             "gabor": gabor_result,
             "fft": fft_result,
             "arcs": arcs,
+            "hough_arcs": arcs,
             "gabor_score": gabor_score,
             "fft_score": fft_score,
             "arc_score": arc_score,
+            "hough_votes": hough_votes,
+            "gabor_energy": gabor_energy,
+            "fft_power": float(fft_result["total_power"]),
             "classical_score": (gabor_score + arc_score) / 2,
         }

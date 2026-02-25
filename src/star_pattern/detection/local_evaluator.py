@@ -9,8 +9,10 @@ from __future__ import annotations
 from typing import Any
 
 import numpy as np
+from scipy import stats
 
 from star_pattern.core.fits_handler import FITSImage
+from star_pattern.evaluation.confidence import ConfidenceScore
 from star_pattern.utils.logging import get_logger
 
 logger = get_logger("detection.local_evaluator")
@@ -86,6 +88,45 @@ class LocalEvaluator:
             f"p_corrected={look_elsewhere_p:.3f}"
         )
 
+        # Build a ConfidenceScore for region-level evaluation
+        p_snr = float(stats.norm.sf(max(snr, 0)))
+        # Combine SNR p-value with look-elsewhere correction
+        p_combined = min(p_snr * max(n_agreeing, 1), 1.0)
+        agreeing_names = []
+        for _det, (section, key) in {
+            "lens": ("lens", "lens_score"),
+            "morphology": ("morphology", "morphology_score"),
+            "distribution": ("distribution", "distribution_score"),
+            "galaxy": ("galaxy", "galaxy_score"),
+            "kinematic": ("kinematic", "kinematic_score"),
+            "transient": ("transient", "transient_score"),
+            "sersic": ("sersic", "sersic_score"),
+            "wavelet": ("wavelet", "wavelet_score"),
+            "population": ("population", "population_score"),
+            "classical": ("classical", "classical_score"),
+            "variability": ("variability", "variability_score"),
+        }.items():
+            sec = detection.get(section, {})
+            if isinstance(sec, dict) and sec.get(key, 0) > self.agreement_threshold:
+                agreeing_names.append(_det)
+
+        region_confidence = ConfidenceScore(
+            confidence=1 - look_elsewhere_p,
+            p_value=p_snr,
+            p_corrected=look_elsewhere_p,
+            physical_quantity="SNR",
+            physical_value=float(snr),
+            method="gaussian_sf",
+            annotation=(
+                f"Region SNR={snr:.1f}, {n_agreeing} detectors agree "
+                f"(p_corrected={look_elsewhere_p:.2e})"
+            ),
+            n_independent_tests=13,
+            correction_method="bonferroni",
+            n_agreeing_detectors=n_agreeing,
+            agreement_details=agreeing_names,
+        )
+
         logger.debug(
             f"Evaluated: verdict={verdict}, confidence={confidence:.2f}, "
             f"significance={significance}/10"
@@ -100,6 +141,7 @@ class LocalEvaluator:
             "snr": snr,
             "n_agreeing_detectors": n_agreeing,
             "look_elsewhere_p": look_elsewhere_p,
+            "region_confidence": region_confidence,
         }
 
     def _compute_snr(

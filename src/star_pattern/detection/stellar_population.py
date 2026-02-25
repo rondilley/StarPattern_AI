@@ -90,6 +90,7 @@ class StellarPopulationAnalyzer:
             return results
 
         results["n_photometric"] = len(colors)
+        results["n_sources_with_color"] = len(colors)
         results["color_range"] = [float(colors.min()), float(colors.max())]
         results["mag_range"] = [float(mags.min()), float(mags.max())]
 

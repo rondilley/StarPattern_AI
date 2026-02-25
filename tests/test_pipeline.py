@@ -786,12 +786,16 @@ class TestExtractAnomalies:
             },
         }
         anomalies = _extract_anomalies(detection, None)
-        assert len(anomalies) == 3
+        # Quality floor filters: SNR 4.5 arc passes (p<0.0013),
+        # SNR 2.1 arc filtered (p=0.018), ring passes (completeness 0.8 ~ 4 sigma)
+        assert len(anomalies) == 2
         types = [a.anomaly_type for a in anomalies]
         assert "lens_arc" in types
         assert "lens_ring" in types
         # All should be from lens detector
         assert all(a.detector == "lens" for a in anomalies)
+        # All should have confidence scores
+        assert all(a.confidence is not None for a in anomalies)
 
     def test_catalog_based_detectors(self):
         from star_pattern.pipeline.autonomous import _extract_anomalies
@@ -811,10 +815,12 @@ class TestExtractAnomalies:
             "variability": {
                 "variable_candidates": [
                     {"ra": 180.3, "dec": 45.3, "score": 0.85,
-                     "classification": "eclipsing_binary"},
+                     "classification": "eclipsing_binary",
+                     "variability_index": {"chi2_reduced": 5.0}},
                 ],
                 "periodic_candidates": [
-                    {"ra": 180.4, "dec": 45.4, "period": 2.34, "power": 0.92},
+                    {"ra": 180.4, "dec": 45.4, "period": 2.34, "power": 0.92,
+                     "fap": 0.001},
                 ],
             },
         }
@@ -837,7 +843,7 @@ class TestExtractAnomalies:
         from star_pattern.pipeline.autonomous import _extract_anomalies
         detection = {
             "lens": {
-                "arcs": [{"radius": 20, "snr": 3.0}],
+                "arcs": [{"radius": 20, "snr": 5.0}],
                 "rings": [],
             },
             "distribution": {
@@ -847,7 +853,7 @@ class TestExtractAnomalies:
             },
             "galaxy": {
                 "tidal_features": [
-                    {"x": 100, "y": 100, "snr": 2.1, "length": 45},
+                    {"x": 100, "y": 100, "snr": 4.0, "length": 45},
                 ],
                 "merger_nuclei": [],
             },
@@ -865,28 +871,47 @@ class TestExtractAnomalies:
         scores = [a.score for a in anomalies]
         assert scores == sorted(scores, reverse=True)
 
-    def test_cap_at_max(self):
-        from star_pattern.pipeline.autonomous import (
-            _extract_anomalies, _MAX_PER_DETECTOR,
+    def test_system_protection_limits(self):
+        from star_pattern.pipeline.autonomous import _extract_anomalies
+        from star_pattern.evaluation.confidence import (
+            _MAX_PER_DETECTOR_SYSTEM, _MAX_PER_REGION_SYSTEM,
         )
+        # Verify system protection limits exist at expected values
+        assert _MAX_PER_DETECTOR_SYSTEM == 500
+        assert _MAX_PER_REGION_SYSTEM == 500
+
+        # Create 30 overdensities with sigma > 3 (all pass quality floor)
         detection = {
             "distribution": {
                 "overdensities": [
-                    {"x": i, "y": i, "sigma": float(i)}
-                    for i in range(60)
+                    {"x": i, "y": i, "sigma": 4.0 + float(i) * 0.1}
+                    for i in range(30)
                 ],
             },
         }
         anomalies = _extract_anomalies(detection, None)
-        # Single detector is capped at _MAX_PER_DETECTOR
-        assert len(anomalies) == _MAX_PER_DETECTOR
+        # No arbitrary low cap -- all quality-passing anomalies are kept
+        assert len(anomalies) == 30
+
+        # Verify quality floor still filters: sigma < 3 should be removed
+        detection_mixed = {
+            "distribution": {
+                "overdensities": [
+                    {"x": 0, "y": 0, "sigma": 1.0},  # Fails floor
+                    {"x": 1, "y": 1, "sigma": 4.0},  # Passes floor
+                ],
+            },
+        }
+        anomalies_mixed = _extract_anomalies(detection_mixed, None)
+        assert len(anomalies_mixed) == 1
+        assert anomalies_mixed[0].properties["sigma"] == 4.0
 
     def test_classical_arcs_use_center_keys(self):
         from star_pattern.pipeline.autonomous import _extract_anomalies
         detection = {
             "classical": {
                 "hough_arcs": [
-                    {"center_x": 120, "center_y": 80, "radius": 25, "strength": 3.1},
+                    {"center_x": 120, "center_y": 80, "radius": 25, "strength": 50.0},
                 ],
             },
         }
@@ -896,7 +921,7 @@ class TestExtractAnomalies:
         assert a.anomaly_type == "classical_arc"
         assert a.pixel_x == 120
         assert a.pixel_y == 80
-        # Score is normalized to [0, 1] within detector (3.1/3.1 = 1.0)
+        # Score is normalized to [0, 1] within detector (50/50 = 1.0)
         assert a.score == 1.0
 
     def test_classical_arcs_skip_missing_coords(self):
@@ -915,6 +940,7 @@ class TestExtractAnomalies:
         from star_pattern.pipeline.autonomous import _extract_anomalies
         detection = {
             "population": {
+                "n_sources_with_color": 60,
                 "blue_stragglers": {
                     "n_blue_stragglers": 3,
                     "bs_fraction": 0.05,

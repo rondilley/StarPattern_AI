@@ -7,6 +7,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from star_pattern.distributed.config import DistributedConfig
+
 
 @dataclass
 class DataConfig:
@@ -268,6 +270,7 @@ class PipelineConfig:
     representation: RepresentationConfig = field(default_factory=RepresentationConfig)
     compositional: CompositionalConfig = field(default_factory=CompositionalConfig)
     temporal: TemporalConfig = field(default_factory=TemporalConfig)
+    distributed: DistributedConfig = field(default_factory=lambda: DistributedConfig())
     output_dir: str = "output/runs"
     checkpoint_interval: int = 10
     max_cycles: int = 1000
@@ -299,6 +302,7 @@ class PipelineConfig:
         representation = RepresentationConfig(**d.get("representation", {}))
         compositional = CompositionalConfig(**d.get("compositional", {}))
         temporal = TemporalConfig(**d.get("temporal", {}))
+        distributed = DistributedConfig.from_dict(d.get("distributed", {}))
         pipeline = d.get("pipeline", {})
         return cls(
             data=data,
@@ -311,6 +315,7 @@ class PipelineConfig:
             representation=representation,
             compositional=compositional,
             temporal=temporal,
+            distributed=distributed,
             output_dir=pipeline.get("output_dir", "output/runs"),
             checkpoint_interval=pipeline.get("checkpoint_interval", 10),
             max_cycles=pipeline.get("max_cycles", 1000),

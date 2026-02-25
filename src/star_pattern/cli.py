@@ -300,6 +300,10 @@ def evolve(ctx: click.Context, generations: int, population: int, resume: str | 
     help="Survey visit order",
 )
 @click.option("--with-ztf/--no-ztf", default=True, help="Include ZTF light curves")
+@click.option("--slaves", type=str, default=None,
+              help="Comma-separated slave addresses (host:port,...) for distributed mode")
+@click.option("--auth-token", "discover_auth_token", default="",
+              help="Shared auth token for distributed communication")
 @click.pass_context
 def discover(
     ctx: click.Context,
@@ -311,6 +315,8 @@ def discover(
     nside: int,
     survey_order: str,
     with_ztf: bool,
+    slaves: str | None,
+    discover_auth_token: str,
 ) -> None:
     """Run autonomous discovery pipeline."""
     from star_pattern.pipeline.autonomous import AutonomousDiscovery
@@ -322,6 +328,17 @@ def discover(
 
     if not with_ztf and "ztf" in config.data.sources:
         config.data.sources = [s for s in config.data.sources if s != "ztf"]
+
+    # Configure distributed mode if slaves specified
+    if slaves:
+        from star_pattern.distributed.config import DistributedConfig
+        addresses = [a.strip() for a in slaves.split(",") if a.strip()]
+        config.distributed = DistributedConfig(
+            mode="master",
+            slave_addresses=addresses,
+            auth_token=discover_auth_token,
+        )
+        console.print(f"  Distributed mode: {len(addresses)} slave(s) configured")
 
     run_mgr = RunManager(base_dir=config.output_dir)
     console.print("[bold]Starting autonomous discovery...[/bold]")
@@ -466,6 +483,35 @@ def setup_local() -> None:
     except Exception as e:
         console.print(f"[red]Setup failed: {e}[/red]")
         console.print("Install: pip install star-pattern-ai[local]")
+
+
+@cli.command()
+@click.option("--host", default="0.0.0.0", help="Listen address")
+@click.option("--port", type=int, default=7827, help="Listen port")
+@click.option("--auth-token", default="", help="Shared auth token")
+@click.pass_context
+def serve(ctx: click.Context, host: str, port: int, auth_token: str) -> None:
+    """Start as a slave worker node, listening for work from a master."""
+    import asyncio
+    from star_pattern.distributed.config import DistributedConfig
+    from star_pattern.distributed.slave import SlaveServer
+
+    config = ctx.obj["config"]
+    config.distributed = DistributedConfig(
+        mode="slave",
+        listen_host=host,
+        listen_port=port,
+        auth_token=auth_token,
+    )
+
+    console.print(
+        f"[bold]Starting slave worker on {host}:{port}...[/bold]"
+    )
+    server = SlaveServer(config)
+    try:
+        asyncio.run(server.start())
+    except KeyboardInterrupt:
+        console.print("\n[bold]Slave worker stopped.[/bold]")
 
 
 def main() -> None:

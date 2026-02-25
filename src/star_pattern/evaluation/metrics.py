@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
 import numpy as np
 
 from star_pattern.utils.logging import get_logger
+
+if TYPE_CHECKING:
+    from star_pattern.evaluation.confidence import ConfidenceScore
 
 logger = get_logger("evaluation.metrics")
 
@@ -24,6 +27,8 @@ class Anomaly:
     sky_dec: float | None = None  # WCS-converted Dec (or catalog Dec)
     score: float = 0.0  # detector-specific score/significance
     properties: dict[str, Any] = field(default_factory=dict)
+    confidence: ConfidenceScore | None = None  # statistical confidence
+    group_id: str | None = None  # spatial grouping ID (e.g. "grp_001")
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -35,6 +40,8 @@ class Anomaly:
             "sky_dec": self.sky_dec,
             "score": self.score,
             "properties": self.properties,
+            "confidence": self.confidence.to_dict() if self.confidence else None,
+            "group_id": self.group_id,
         }
 
 
@@ -177,6 +184,7 @@ class PatternResult:
         self.hypothesis: str | None = None
         self.debate_verdict: str | None = None
         self.consensus_score: float | None = None
+        self.region_confidence: ConfidenceScore | None = None
 
     @property
     def combined_score(self) -> float:
@@ -202,6 +210,10 @@ class PatternResult:
             "hypothesis": self.hypothesis,
             "debate_verdict": self.debate_verdict,
             "consensus_score": self.consensus_score,
+            "region_confidence": (
+                self.region_confidence.to_dict()
+                if self.region_confidence else None
+            ),
             "metadata": self.metadata,
             "details": self.details,
         }
