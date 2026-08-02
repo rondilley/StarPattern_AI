@@ -11,19 +11,19 @@ from __future__ import annotations
 
 import json
 import time
-from concurrent.futures import ProcessPoolExecutor, as_completed
+from concurrent.futures import as_completed
 from pathlib import Path
-from typing import Any, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
-from star_pattern.core.config import PipelineConfig, EvolutionConfig
+from star_pattern.core.config import PipelineConfig
 from star_pattern.core.fits_handler import FITSImage
-from star_pattern.discovery.genome import DetectionGenome
 from star_pattern.discovery.fitness import FitnessEvaluator
+from star_pattern.discovery.genome import DetectionGenome
 from star_pattern.discovery.presets import get_preset_genomes
-from star_pattern.utils.run_manager import RunManager
 from star_pattern.utils.logging import get_logger
+from star_pattern.utils.run_manager import RunManager
 
 if TYPE_CHECKING:
     from star_pattern.llm.strategy import StrategyResult
@@ -118,10 +118,7 @@ class EvolutionaryDiscovery:
 
         if n_workers > 1:
             with ThreadPoolExecutor(max_workers=n_workers) as pool:
-                futures = {
-                    pool.submit(_eval_genome, genome): genome
-                    for genome in self.population
-                }
+                futures = {pool.submit(_eval_genome, genome): genome for genome in self.population}
                 for future in as_completed(futures):
                     genome = futures[future]
                     try:
@@ -325,7 +322,7 @@ class EvolutionaryDiscovery:
             applied = 0
             for i, gdef in enumerate(variant.gene_defs):
                 if gdef.name.startswith("weight_"):
-                    det_name = gdef.name[len("weight_"):]
+                    det_name = gdef.name[len("weight_") :]
                     if det_name in weights:
                         variant.genes[i] = gdef.clip(float(weights[det_name]))
                         applied += 1
@@ -335,9 +332,7 @@ class EvolutionaryDiscovery:
                 injected += 1
 
         if injected > 0:
-            logger.info(
-                f"Injected {injected} active-learning weight variants into population"
-            )
+            logger.info(f"Injected {injected} active-learning weight variants into population")
 
     def apply_strategy_to_population(self, strategy: StrategyResult) -> None:
         """Create genome variants from LLM strategy suggestions.
@@ -356,9 +351,7 @@ class EvolutionaryDiscovery:
             return
 
         # Create variant genome from best + LLM adjustments
-        variant = DetectionGenome(
-            genes=self.best_genome.genes.copy(), rng=self.rng
-        )
+        variant = DetectionGenome(genes=self.best_genome.genes.copy(), rng=self.rng)
 
         adjustments_applied = 0
         for adj in strategy.detector_adjustments:
@@ -379,13 +372,10 @@ class EvolutionaryDiscovery:
             # Replace worst genome in population
             self.population[-1] = variant
             logger.info(
-                f"Applied {adjustments_applied} LLM strategy adjustments "
-                f"to population variant"
+                f"Applied {adjustments_applied} LLM strategy adjustments " f"to population variant"
             )
 
-    def merge_strategy_weights(
-        self, genome: DetectionGenome, strategy: StrategyResult
-    ) -> None:
+    def merge_strategy_weights(self, genome: DetectionGenome, strategy: StrategyResult) -> None:
         """Blend evolved weights with LLM-suggested weights.
 
         Uses 70% evolved + 30% LLM suggestion to prevent LLM from
@@ -402,7 +392,7 @@ class EvolutionaryDiscovery:
         weight_gene_prefix = "weight_"
         for i, gdef in enumerate(genome.gene_defs):
             if gdef.name.startswith(weight_gene_prefix):
-                detector_name = gdef.name[len(weight_gene_prefix):]
+                detector_name = gdef.name[len(weight_gene_prefix) :]
                 if detector_name in strategy.weight_adjustments:
                     suggested = strategy.weight_adjustments[detector_name]
                     current = genome.genes[i]
@@ -438,9 +428,7 @@ class EvolutionaryDiscovery:
             raise FileNotFoundError(f"Checkpoint not found: {checkpoint_name}")
 
         self.generation = data["generation"]
-        self.population = [
-            DetectionGenome.from_dict(g) for g in data["population"]
-        ]
+        self.population = [DetectionGenome.from_dict(g) for g in data["population"]]
         if data["best_genome"]:
             self.best_genome = DetectionGenome.from_dict(data["best_genome"])
         self.history = data.get("history", [])
@@ -493,7 +481,6 @@ class EvolutionaryDiscovery:
         Returns:
             Evolved pipeline genome population, sorted by fitness.
         """
-        from star_pattern.discovery.pipeline_genome import PipelineGenome
         from star_pattern.detection.compositional import ComposedPipeline
 
         eval_images = images or self.images
@@ -538,7 +525,7 @@ class EvolutionaryDiscovery:
             existing = self._load_replay_genomes()
 
             # Add current top genomes
-            all_genomes = existing + self.population[:self.evo.elite_count]
+            all_genomes = existing + self.population[: self.evo.elite_count]
 
             # Deduplicate and keep top by fitness
             all_genomes.sort(key=lambda g: g.fitness, reverse=True)

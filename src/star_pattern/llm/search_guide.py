@@ -7,8 +7,8 @@ from typing import Any
 
 from star_pattern.core.config import LLMConfig
 from star_pattern.core.sky_region import SkyRegion
+from star_pattern.llm.prompts import SEARCH_GUIDE_PROMPT, SYSTEM_ASTRONOMER
 from star_pattern.llm.providers.base import LLMProvider
-from star_pattern.llm.prompts import SYSTEM_ASTRONOMER, SEARCH_GUIDE_PROMPT
 from star_pattern.utils.logging import get_logger
 
 logger = get_logger("llm.search_guide")

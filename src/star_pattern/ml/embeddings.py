@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from typing import Any
-
 import numpy as np
 
 from star_pattern.utils.logging import get_logger

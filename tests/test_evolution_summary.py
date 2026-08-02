@@ -1,10 +1,10 @@
 """Tests for create_evolution_summary visualization."""
 
 import matplotlib
+
 matplotlib.use("Agg")
 
 import matplotlib.pyplot as plt
-import pytest
 
 from star_pattern.visualization.pattern_overlay import create_evolution_summary
 
@@ -14,20 +14,29 @@ def _single_gen_data(n_cycles: int = 5):
     generation_histories = []
     evolution_history = []
     for c in range(n_cycles):
-        generation_histories.append([{
-            "generation": 0,
-            "best_fitness": 0.3 + c * 0.05,
-            "mean_fitness": 0.2 + c * 0.04,
-            "mutation_rate": 0.15 - c * 0.01,
-        }])
-        evolution_history.append({
-            "cycle": c,
-            "fitness": 0.3 + c * 0.05,
-            "components": {
-                "anomaly": 0.1, "significance": 0.08,
-                "novelty": 0.05, "diversity": 0.03, "recovery": 0.04,
-            },
-        })
+        generation_histories.append(
+            [
+                {
+                    "generation": 0,
+                    "best_fitness": 0.3 + c * 0.05,
+                    "mean_fitness": 0.2 + c * 0.04,
+                    "mutation_rate": 0.15 - c * 0.01,
+                }
+            ]
+        )
+        evolution_history.append(
+            {
+                "cycle": c,
+                "fitness": 0.3 + c * 0.05,
+                "components": {
+                    "anomaly": 0.1,
+                    "significance": 0.08,
+                    "novelty": 0.05,
+                    "diversity": 0.03,
+                    "recovery": 0.04,
+                },
+            }
+        )
     return generation_histories, evolution_history
 
 
@@ -38,21 +47,28 @@ def _multi_gen_data(n_cycles: int = 3, n_gens: int = 5):
     for c in range(n_cycles):
         gens = []
         for g in range(n_gens):
-            gens.append({
-                "generation": g,
-                "best_fitness": 0.2 + c * 0.05 + g * 0.02,
-                "mean_fitness": 0.15 + c * 0.04 + g * 0.01,
-                "mutation_rate": 0.15 - g * 0.01,
-            })
+            gens.append(
+                {
+                    "generation": g,
+                    "best_fitness": 0.2 + c * 0.05 + g * 0.02,
+                    "mean_fitness": 0.15 + c * 0.04 + g * 0.01,
+                    "mutation_rate": 0.15 - g * 0.01,
+                }
+            )
         generation_histories.append(gens)
-        evolution_history.append({
-            "cycle": c,
-            "fitness": gens[-1]["best_fitness"],
-            "components": {
-                "anomaly": 0.1, "significance": 0.08,
-                "novelty": 0.05, "diversity": 0.03, "recovery": 0.04,
-            },
-        })
+        evolution_history.append(
+            {
+                "cycle": c,
+                "fitness": gens[-1]["best_fitness"],
+                "components": {
+                    "anomaly": 0.1,
+                    "significance": 0.08,
+                    "novelty": 0.05,
+                    "diversity": 0.03,
+                    "recovery": 0.04,
+                },
+            }
+        )
     return generation_histories, evolution_history
 
 

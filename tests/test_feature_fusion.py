@@ -1,7 +1,6 @@
 """Tests for cross-detector feature fusion."""
 
 import numpy as np
-import pytest
 
 from star_pattern.detection.feature_fusion import FeatureFusionExtractor
 

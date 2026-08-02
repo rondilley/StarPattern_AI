@@ -1,9 +1,11 @@
 """Tests for sky tiling."""
 
-import numpy as np
 import pytest
 
 from star_pattern.core.tiling import TileGrid
+
+# Requires live external services; excluded from the offline CI run.
+pytestmark = pytest.mark.network
 
 
 class TestTileGrid:
@@ -50,8 +52,10 @@ class TestTileGrid:
         for i in range(len(tiles)):
             for j in range(i + 1, len(tiles)):
                 sep = TileGrid._angular_sep(
-                    tiles[i].ra, tiles[i].dec,
-                    tiles[j].ra, tiles[j].dec,
+                    tiles[i].ra,
+                    tiles[i].dec,
+                    tiles[j].ra,
+                    tiles[j].dec,
                 )
                 if sep < min_sep:
                     min_sep = sep

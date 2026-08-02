@@ -9,12 +9,11 @@ from typing import Any
 from star_pattern.distributed.config import DistributedConfig
 from star_pattern.distributed.protocol import (
     PROTOCOL_VERSION,
-    WorkUnit,
     WorkResult,
+    WorkUnit,
     make_auth,
     recv_message,
     send_message,
-    verify_auth,
 )
 from star_pattern.utils.logging import get_logger
 
@@ -66,12 +65,15 @@ class SlaveConnection:
 
         # Send handshake
         ts = time.time()
-        await send_message(self._writer, {
-            "type": "handshake",
-            "version": PROTOCOL_VERSION,
-            "auth_digest": make_auth(self.auth_token, ts),
-            "timestamp": ts,
-        })
+        await send_message(
+            self._writer,
+            {
+                "type": "handshake",
+                "version": PROTOCOL_VERSION,
+                "auth_digest": make_auth(self.auth_token, ts),
+                "timestamp": ts,
+            },
+        )
 
         # Wait for ack
         try:
@@ -95,8 +97,7 @@ class SlaveConnection:
         self._recv_task = asyncio.create_task(self._recv_loop())
 
         logger.info(
-            f"Connected to slave {self.slave_id} "
-            f"({self.address}, {self.n_workers} workers)"
+            f"Connected to slave {self.slave_id} " f"({self.address}, {self.n_workers} workers)"
         )
         return True
 
@@ -132,34 +133,45 @@ class SlaveConnection:
         """Send a work unit to this slave."""
         if not self.connected or self._writer is None:
             raise ConnectionError(f"Not connected to {self.address}")
-        await send_message(self._writer, {
-            "type": "work_dispatch",
-            "payload": unit.to_dict(),
-        })
+        await send_message(
+            self._writer,
+            {
+                "type": "work_dispatch",
+                "payload": unit.to_dict(),
+            },
+        )
         self.pending_count += 1
 
     async def send_config_update(
-        self, detection_config: dict[str, Any], genome_dict: dict[str, Any],
+        self,
+        detection_config: dict[str, Any],
+        genome_dict: dict[str, Any],
     ) -> None:
         """Push updated detection config and genome to slave."""
         if not self.connected or self._writer is None:
             return
-        await send_message(self._writer, {
-            "type": "config_update",
-            "payload": {
-                "detection_config": detection_config,
-                "genome_dict": genome_dict,
+        await send_message(
+            self._writer,
+            {
+                "type": "config_update",
+                "payload": {
+                    "detection_config": detection_config,
+                    "genome_dict": genome_dict,
+                },
             },
-        })
+        )
 
     async def send_heartbeat(self) -> None:
         """Send a heartbeat ping."""
         if not self.connected or self._writer is None:
             return
-        await send_message(self._writer, {
-            "type": "heartbeat",
-            "timestamp": time.time(),
-        })
+        await send_message(
+            self._writer,
+            {
+                "type": "heartbeat",
+                "timestamp": time.time(),
+            },
+        )
 
     async def send_shutdown(self) -> None:
         """Tell the slave to shut down."""
@@ -184,8 +196,7 @@ class SlaveConnection:
             if await self.connect():
                 return True
         logger.error(
-            f"Giving up on {self.address} after "
-            f"{self.max_reconnect_attempts} attempts"
+            f"Giving up on {self.address} after " f"{self.max_reconnect_attempts} attempts"
         )
         return False
 
@@ -233,9 +244,7 @@ class MasterDispatcher:
             tasks.append(conn.connect())
 
         results = await asyncio.gather(*tasks, return_exceptions=True)
-        n_connected = sum(
-            1 for r in results if r is True
-        )
+        n_connected = sum(1 for r in results if r is True)
 
         # Start result collector for each connected slave
         for slave in self._slaves:
@@ -243,9 +252,7 @@ class MasterDispatcher:
                 task = asyncio.create_task(self._collect_from(slave))
                 self._collector_tasks.append(task)
 
-        logger.info(
-            f"Connected to {n_connected}/{len(self._slaves)} slaves"
-        )
+        logger.info(f"Connected to {n_connected}/{len(self._slaves)} slaves")
         return n_connected
 
     async def _collect_from(self, slave: SlaveConnection) -> None:
@@ -260,9 +267,9 @@ class MasterDispatcher:
     def _least_loaded_slave(self) -> SlaveConnection | None:
         """Return the connected slave with the fewest pending work units."""
         candidates = [
-            s for s in self._slaves
-            if s.connected
-            and s.pending_count < self.config.max_concurrent_per_slave
+            s
+            for s in self._slaves
+            if s.connected and s.pending_count < self.config.max_concurrent_per_slave
         ]
         if not candidates:
             return None
@@ -281,21 +288,21 @@ class MasterDispatcher:
         try:
             await slave.send_work(unit)
             self._pending_work[unit.work_id] = unit
-            logger.debug(
-                f"Dispatched {unit.work_id[:8]} to {slave.slave_id}"
-            )
+            logger.debug(f"Dispatched {unit.work_id[:8]} to {slave.slave_id}")
             return True
         except ConnectionError:
             logger.warning(f"Dispatch failed to {slave.slave_id}")
             return False
 
     async def collect_result(
-        self, timeout: float = 30.0,
+        self,
+        timeout: float = 30.0,
     ) -> WorkResult | None:
         """Collect one result from any slave. Returns None on timeout."""
         try:
             msg = await asyncio.wait_for(
-                self._result_queue.get(), timeout=timeout,
+                self._result_queue.get(),
+                timeout=timeout,
             )
         except asyncio.TimeoutError:
             return None
@@ -310,9 +317,7 @@ class MasterDispatcher:
 
         elif msg_type == "work_error":
             work_id = payload.get("work_id", "")
-            logger.error(
-                f"Slave error for {work_id[:8]}: {payload.get('error')}"
-            )
+            logger.error(f"Slave error for {work_id[:8]}: {payload.get('error')}")
             # Retry logic
             unit = self._pending_work.pop(work_id, None)
             if unit is not None and unit.priority < self.config.max_retries:
@@ -324,7 +329,8 @@ class MasterDispatcher:
         return None
 
     async def collect_all_pending(
-        self, timeout: float = 30.0,
+        self,
+        timeout: float = 30.0,
     ) -> list[WorkResult]:
         """Collect all available results within timeout."""
         results: list[WorkResult] = []

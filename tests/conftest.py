@@ -2,16 +2,15 @@
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 import numpy as np
 import pytest
 
-from star_pattern.core.fits_handler import FITSImage
-from star_pattern.core.sky_region import SkyRegion, RegionData
 from star_pattern.core.catalog import CatalogEntry, StarCatalog
 from star_pattern.core.config import PipelineConfig
+from star_pattern.core.fits_handler import FITSImage
+from star_pattern.core.sky_region import RegionData, SkyRegion
 
 # Project root where *.key.txt files live
 PROJECT_ROOT = Path(__file__).parent.parent
@@ -132,8 +131,8 @@ def sample_region_data(
 @pytest.fixture
 def synthetic_image_with_wcs() -> FITSImage:
     """Synthetic FITS image with valid TAN WCS for mosaicking tests."""
-    from astropy.wcs import WCS
     from astropy.io import fits
+    from astropy.wcs import WCS
 
     rng = np.random.default_rng(99)
     data = rng.normal(100, 10, (128, 128)).astype(np.float32)

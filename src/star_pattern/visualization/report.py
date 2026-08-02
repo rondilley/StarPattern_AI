@@ -19,9 +19,20 @@ logger = get_logger("visualization.report")
 
 # Canonical detector names used in _detector_summary_table
 _DETECTOR_NAMES = [
-    "classical", "source_extractor", "morphology", "anomaly", "lens",
-    "distribution", "galaxy", "kinematic", "transient", "sersic",
-    "wavelet", "population", "variability", "temporal",
+    "classical",
+    "source_extractor",
+    "morphology",
+    "anomaly",
+    "lens",
+    "distribution",
+    "galaxy",
+    "kinematic",
+    "transient",
+    "sersic",
+    "wavelet",
+    "population",
+    "variability",
+    "temporal",
 ]
 
 
@@ -291,7 +302,8 @@ def _detector_summary_table(findings: list[PatternResult]) -> list[str]:
 
     for f in findings:
         det_scores = f.metadata.get("local_classification", {}).get(
-            "detector_scores", {},
+            "detector_scores",
+            {},
         )
         sub_dets = _extract_sub_detections(f.details)
 
@@ -334,12 +346,8 @@ def _detector_summary_table(findings: list[PatternResult]) -> list[str]:
 
     # Build table (only include detectors that were active)
     lines = []
-    lines.append(
-        "| Detector | Active in | Sub-detections | Mean score | Max score |"
-    )
-    lines.append(
-        "|----------|-----------|----------------|------------|-----------|"
-    )
+    lines.append("| Detector | Active in | Sub-detections | Mean score | Max score |")
+    lines.append("|----------|-----------|----------------|------------|-----------|")
     for name in _DETECTOR_NAMES:
         s = stats[name]
         if s["active_count"] == 0 and s["sub_det_total"] == 0:
@@ -348,8 +356,7 @@ def _detector_summary_table(findings: list[PatternResult]) -> list[str]:
         mean_s = f"{np.mean(scores):.3f}" if scores else "--"
         max_s = f"{np.max(scores):.3f}" if scores else "--"
         lines.append(
-            f"| {name} | {s['active_count']} | "
-            f"{s['sub_det_total']} | {mean_s} | {max_s} |"
+            f"| {name} | {s['active_count']} | " f"{s['sub_det_total']} | {mean_s} | {max_s} |"
         )
     lines.append("")
     return lines
@@ -452,6 +459,7 @@ def _format_anomaly_props(a: Anomaly) -> str:
         parts.append(f"len={p['length']}px")
     if "orientation" in p:
         import math
+
         deg = math.degrees(p["orientation"]) % 360
         parts.append(f"{deg:.0f} deg")
     if "extent_px" in p:
@@ -479,10 +487,17 @@ def _format_anomaly_props(a: Anomaly) -> str:
 
 
 def _format_confidence_str(a: Anomaly) -> str:
-    """Format confidence score for table display."""
+    """Format confidence score for table display.
+
+    Heuristic detections have no p-value, so the display must show a
+    score and say so, rather than imply a significance it does not have.
+    """
     if a.confidence is None:
         return "--"
     conf = a.confidence
+    if conf.p_corrected is None:
+        score = conf.heuristic_score if conf.heuristic_score is not None else conf.confidence
+        return f"{score:.3f} (heuristic)"
     return f"{conf.confidence:.3f} (p={conf.p_corrected:.1e})"
 
 
@@ -500,7 +515,9 @@ def _format_anomaly_table(anomalies: list[Anomaly]) -> list[str]:
     lines.append("")
 
     if has_confidence:
-        header = "| # | Type | Location (RA, Dec) | Detector | Score | Confidence | Key properties |"
+        header = (
+            "| # | Type | Location (RA, Dec) | Detector | Score | Confidence | Key properties |"
+        )
         sep = "|---|------|--------------------|----------|-------|------------|----------------|"
     else:
         header = "| # | Type | Location (RA, Dec) | Detector | Score | Key properties |"
@@ -509,7 +526,9 @@ def _format_anomaly_table(anomalies: list[Anomaly]) -> list[str]:
     lines.append(sep)
 
     for i, a in enumerate(anomalies, 1):
-        display = _ANOMALY_DISPLAY_NAMES.get(a.anomaly_type, a.anomaly_type.replace("_", " ").capitalize())
+        display = _ANOMALY_DISPLAY_NAMES.get(
+            a.anomaly_type, a.anomaly_type.replace("_", " ").capitalize()
+        )
         loc = _format_anomaly_location(a)
         score_str = _format_anomaly_score(a)
         props = _format_anomaly_props(a)
@@ -529,7 +548,8 @@ def _format_anomaly_table(anomalies: list[Anomaly]) -> list[str]:
 
     # Per-anomaly evidence breakdown (annotation from confidence)
     annotations = [
-        (i, a) for i, a in enumerate(anomalies, 1)
+        (i, a)
+        for i, a in enumerate(anomalies, 1)
         if a.confidence is not None and a.confidence.annotation
     ]
     if annotations:
@@ -635,22 +655,22 @@ def _format_finding(
             "variability": ["variable candidates", "periodic candidates"],
             "population": ["blue stragglers", "red giants"],
             "temporal": [
-                "new sources (temporal)", "disappeared sources",
-                "brightenings", "fadings", "moving objects",
+                "new sources (temporal)",
+                "disappeared sources",
+                "brightenings",
+                "fadings",
+                "moving objects",
             ],
         }
         for det_name, score in sorted(
-            active_detectors.items(), key=lambda x: x[1], reverse=True,
+            active_detectors.items(),
+            key=lambda x: x[1],
+            reverse=True,
         ):
             feature_keys = det_sub_map.get(det_name, [])
-            found = [
-                f"{sub_counts[k]} {k}" for k in feature_keys
-                if sub_counts.get(k, 0) > 0
-            ]
+            found = [f"{sub_counts[k]} {k}" for k in feature_keys if sub_counts.get(k, 0) > 0]
             if found:
-                lines.append(
-                    f"- **{det_name}** ({score:.2f}): found {', '.join(found)}"
-                )
+                lines.append(f"- **{det_name}** ({score:.2f}): found {', '.join(found)}")
             elif det_name in ("morphology", "anomaly", "source_extractor"):
                 # These detectors don't produce named sub-detections
                 lines.append(f"- **{det_name}** ({score:.2f}): signal detected")
@@ -697,9 +717,7 @@ def _format_finding(
     lines.append("")
     lines.append("| Measure | Value | Interpretation |")
     lines.append("|---------|-------|----------------|")
-    lines.append(
-        f"| SNR | {snr:.1f} | {_interpret_metric('snr', snr)} |"
-    )
+    lines.append(f"| SNR | {snr:.1f} | {_interpret_metric('snr', snr)} |")
     lines.append(
         f"| Agreeing detectors | {n_agree}/13 | "
         f"{_interpret_metric('n_agreeing_detectors', n_agree)} |"
@@ -772,9 +790,7 @@ class DiscoveryReport:
             )
             token_usage = meta.get("token_usage", {})
             if token_usage:
-                lines.append(
-                    f"**LLM tokens used:** {token_usage.get('total_tokens', 0):,}"
-                )
+                lines.append(f"**LLM tokens used:** {token_usage.get('total_tokens', 0):,}")
             lines.append("")
 
         # --- Summary ---
@@ -793,18 +809,18 @@ class DiscoveryReport:
             n_regions = meta.get("n_regions", "?")
 
             # Opening context
-            lines.append(
-                f"Searched {n_regions} sky region(s), producing "
-                f"{n_total} finding(s)."
-            )
+            lines.append(f"Searched {n_regions} sky region(s), producing " f"{n_total} finding(s).")
             lines.append("")
 
             # Explicit new-vs-known framing
             if n_follow > 0:
                 top_new = new_findings[0]
                 top_name = _classification_display_name(
-                    top_new[2].metadata.get("local_classification", {}).get(
-                        "classification", top_new[2].detection_type,
+                    top_new[2]
+                    .metadata.get("local_classification", {})
+                    .get(
+                        "classification",
+                        top_new[2].detection_type,
                     ),
                 )
                 lines.append(
@@ -844,21 +860,27 @@ class DiscoveryReport:
                     type_counts[display] = type_counts.get(display, 0) + 1
 
                 n_anom = len(all_anomalies)
-                n_with_coords = sum(
-                    1 for a in all_anomalies
-                    if a.sky_ra is not None
-                )
+                n_with_coords = sum(1 for a in all_anomalies if a.sky_ra is not None)
                 n_no_coords = n_anom - n_with_coords
                 type_list = ", ".join(
                     f"{count} {name.lower()}" + ("s" if count > 1 else "")
                     for name, count in sorted(
-                        type_counts.items(), key=lambda x: -x[1],
+                        type_counts.items(),
+                        key=lambda x: -x[1],
                     )
                 )
-                lines.append(
+                summary = (
                     f"**Anomaly summary:** {n_anom} individual anomalies "
                     f"across {n_total} finding(s): {type_list}."
                 )
+                if n_no_coords:
+                    # Worth stating: an anomaly with no sky position cannot
+                    # be cross-referenced or followed up by anyone else.
+                    summary += (
+                        f" {n_no_coords} of these have no sky coordinates "
+                        f"and cannot be cross-referenced."
+                    )
+                lines.append(summary)
                 lines.append("")
 
         # --- Visual Overview ---
@@ -892,12 +914,8 @@ class DiscoveryReport:
             )
             lines.append("")
 
-            lines.append(
-                "| Finding | Type | RA | Dec | Score | Assessment | Confidence |"
-            )
-            lines.append(
-                "|---------|------|-----|-----|-------|------------|------------|"
-            )
+            lines.append("| Finding | Type | RA | Dec | Score | Assessment | Confidence |")
+            lines.append("|---------|------|-----|-----|-------|------------|------------|")
             for finding_num, _tag, f in low_findings:
                 ev = f.metadata.get("local_evaluation", {})
                 verdict = ev.get("verdict", "?")
@@ -944,11 +962,13 @@ class DiscoveryReport:
             for dtype, group in sorted(by_type.items(), key=lambda x: -len(x[1])):
                 scores = [f.anomaly_score for f in group]
                 n_real_type = sum(
-                    1 for f in group
+                    1
+                    for f in group
                     if f.metadata.get("local_evaluation", {}).get("verdict") == "real"
                 )
                 n_artifact = sum(
-                    1 for f in group
+                    1
+                    for f in group
                     if f.metadata.get("local_evaluation", {}).get("verdict") == "artifact"
                 )
                 lines.append(
@@ -971,9 +991,7 @@ class DiscoveryReport:
             lines.append("| Cycle | Fitness |")
             lines.append("|-------|---------|")
             for entry in evolution:
-                lines.append(
-                    f"| {entry['cycle']} | {entry['fitness']:.4f} |"
-                )
+                lines.append(f"| {entry['cycle']} | {entry['fitness']:.4f} |")
             lines.append("")
 
         report_path.write_text("\n".join(lines))
@@ -1025,11 +1043,12 @@ class DiscoveryReport:
 
         # Generate plots
         try:
+            import matplotlib.pyplot as plt
+
             from star_pattern.visualization.mosaic import (
                 create_discovery_mosaic,
                 create_score_histogram,
             )
-            import matplotlib.pyplot as plt
 
             mosaic = create_discovery_mosaic(findings, images=images)
             mosaic_path = self.output_dir / "mosaic.png"

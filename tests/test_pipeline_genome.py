@@ -1,9 +1,8 @@
 """Tests for PipelineGenome: variable-length evolved detection pipelines."""
 
 import numpy as np
-import pytest
 
-from star_pattern.detection.compositional import OperationSpec, ALL_OPERATIONS
+from star_pattern.detection.compositional import ALL_OPERATIONS, OperationSpec
 from star_pattern.discovery.pipeline_genome import PipelineGenome
 
 

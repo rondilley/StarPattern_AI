@@ -1,19 +1,15 @@
 """Tests for evolution improvements: adaptive mutation, experience replay, feedback retraining."""
 
-import json
-from pathlib import Path
-
 import numpy as np
-import pytest
 
-from star_pattern.core.config import PipelineConfig, EvolutionConfig, DetectionConfig
+from star_pattern.core.config import DetectionConfig, EvolutionConfig, PipelineConfig
 from star_pattern.core.fits_handler import FITSImage
 from star_pattern.detection.ensemble import EnsembleDetector
-from star_pattern.discovery.genome import DetectionGenome, GENE_DEFINITIONS
-from star_pattern.discovery.fitness import FitnessEvaluator
 from star_pattern.discovery.evolutionary import EvolutionaryDiscovery
-from star_pattern.pipeline.active_learning import ActiveLearner
+from star_pattern.discovery.fitness import FitnessEvaluator
+from star_pattern.discovery.genome import GENE_DEFINITIONS, DetectionGenome
 from star_pattern.evaluation.metrics import PatternResult
+from star_pattern.pipeline.active_learning import ActiveLearner
 
 
 class TestAdaptiveMutation:
@@ -131,10 +127,7 @@ class TestExperienceReplay:
         evo2.initialize_population()
 
         # Check that some genomes have the distinctive gene values
-        has_replay = any(
-            np.allclose(g.genes, 0.5, atol=0.01)
-            for g in evo2.population
-        )
+        has_replay = any(np.allclose(g.genes, 0.5, atol=0.01) for g in evo2.population)
         assert has_replay
 
 
@@ -180,7 +173,7 @@ class TestSyntheticInjectionFitness:
         data = rng.normal(100, 10, (128, 128)).astype(np.float32)
         # Add a bright source so detection has something to find
         y, x = np.mgrid[:128, :128]
-        data += 500 * np.exp(-((x - 64) ** 2 + (y - 64) ** 2) / (2 * 5 ** 2))
+        data += 500 * np.exp(-((x - 64) ** 2 + (y - 64) ** 2) / (2 * 5**2))
         image = FITSImage.from_array(data)
 
         genome = DetectionGenome()
@@ -282,7 +275,8 @@ class TestFeedbackDrivenRetraining:
         for i in range(15):
             result = self._make_pattern_result(score=0.7)
             learner.add_feedback(
-                result, is_interesting=True,
+                result,
+                is_interesting=True,
                 detector_scores={"classical": 0.2, "lens": 0.8, "morphology": 0.3},
             )
 
@@ -290,7 +284,8 @@ class TestFeedbackDrivenRetraining:
         for i in range(15):
             result = self._make_pattern_result(score=0.3)
             learner.add_feedback(
-                result, is_interesting=False,
+                result,
+                is_interesting=False,
                 detector_scores={"classical": 0.5, "lens": 0.1, "morphology": 0.4},
             )
 
@@ -389,7 +384,9 @@ class TestGenomeExpansion:
         assert "sersic" in config
         assert "wavelet" in config
         assert "population" in config
-        assert "weight_sersic" in config["ensemble_weights"] or "sersic" in config["ensemble_weights"]
+        assert (
+            "weight_sersic" in config["ensemble_weights"] or "sersic" in config["ensemble_weights"]
+        )
 
     def test_detection_config_roundtrip(self):
         """DetectionConfig should roundtrip through genome dict."""
@@ -429,9 +426,18 @@ class TestDetectorEnableDisable:
         """All 12 enable genes should be in GENE_DEFINITIONS."""
         names = {g.name for g in GENE_DEFINITIONS}
         for det in [
-            "classical", "morphology", "anomaly", "lens", "distribution",
-            "galaxy", "kinematic", "transient", "sersic", "wavelet",
-            "population", "variability",
+            "classical",
+            "morphology",
+            "anomaly",
+            "lens",
+            "distribution",
+            "galaxy",
+            "kinematic",
+            "transient",
+            "sersic",
+            "wavelet",
+            "population",
+            "variability",
         ]:
             assert f"enable_{det}" in names
 
@@ -553,9 +559,7 @@ class TestTypeDiversityFitness:
         """Genome activating more detectors should get higher novelty bonus."""
         from star_pattern.discovery.fitness import FitnessEvaluator
 
-        evaluator = FitnessEvaluator(
-            EvolutionConfig(), use_synthetic_injection=False
-        )
+        evaluator = FitnessEvaluator(EvolutionConfig(), use_synthetic_injection=False)
 
         # Create a simple test image
         rng = np.random.default_rng(42)
@@ -611,8 +615,8 @@ class TestNeverFoundTypes:
 
     def test_found_types_reduces_never_found(self):
         """Finding an anomaly should remove its type from never_found."""
-        from star_pattern.pipeline.autonomous import AutonomousDiscovery
         from star_pattern.evaluation.metrics import Anomaly
+        from star_pattern.pipeline.autonomous import AutonomousDiscovery
 
         config = PipelineConfig()
         config.max_cycles = 0
@@ -620,8 +624,10 @@ class TestNeverFoundTypes:
 
         # Simulate finding a lens_arc
         result = PatternResult(
-            region_ra=180.0, region_dec=45.0,
-            anomaly_score=0.8, detection_type="lens",
+            region_ra=180.0,
+            region_dec=45.0,
+            anomaly_score=0.8,
+            detection_type="lens",
         )
         result.anomalies = [
             Anomaly(anomaly_type="lens_arc", detector="lens", score=0.9),

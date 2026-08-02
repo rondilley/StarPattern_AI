@@ -3,8 +3,6 @@
 import json
 import time
 
-import pytest
-
 from star_pattern.llm.cache import LLMCache
 
 

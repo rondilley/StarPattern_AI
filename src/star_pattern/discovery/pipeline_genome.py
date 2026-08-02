@@ -6,17 +6,16 @@ Evolves the structure and parameters of detection pipelines
 
 from __future__ import annotations
 
-import copy
 from typing import Any
 
 import numpy as np
 
 from star_pattern.detection.compositional import (
-    OperationSpec,
-    PipelineSpec,
+    _CHOICE_MAPS,
     ALL_OPERATIONS,
     OPERATION_PARAMS,
-    _CHOICE_MAPS,
+    OperationSpec,
+    PipelineSpec,
 )
 from star_pattern.utils.logging import get_logger
 
@@ -90,19 +89,14 @@ class PipelineGenome:
         Structural: swap, add, or remove operations.
         Parametric: modify operation parameters.
         """
-        new_ops = [
-            OperationSpec(name=op.name, params=dict(op.params))
-            for op in self.operations
-        ]
+        new_ops = [OperationSpec(name=op.name, params=dict(op.params)) for op in self.operations]
         new_score = self.score_method
 
         # Structural mutation: swap an operation
         if self.rng.random() < rate and len(new_ops) >= 1:
             idx = self.rng.integers(len(new_ops))
             op_name = self.rng.choice(ALL_OPERATIONS)
-            new_ops[idx] = OperationSpec(
-                name=op_name, params=_random_params(op_name, self.rng)
-            )
+            new_ops[idx] = OperationSpec(name=op_name, params=_random_params(op_name, self.rng))
 
         # Structural mutation: add an operation
         if self.rng.random() < rate * 0.5 and len(new_ops) < self.max_ops:
@@ -135,21 +129,13 @@ class PipelineGenome:
         )
         return child
 
-    def crossover(
-        self, other: PipelineGenome
-    ) -> tuple[PipelineGenome, PipelineGenome]:
+    def crossover(self, other: PipelineGenome) -> tuple[PipelineGenome, PipelineGenome]:
         """Single-point crossover aligned by position.
 
         Swaps a contiguous segment between two genomes.
         """
-        ops1 = [
-            OperationSpec(name=op.name, params=dict(op.params))
-            for op in self.operations
-        ]
-        ops2 = [
-            OperationSpec(name=op.name, params=dict(op.params))
-            for op in other.operations
-        ]
+        ops1 = [OperationSpec(name=op.name, params=dict(op.params)) for op in self.operations]
+        ops2 = [OperationSpec(name=op.name, params=dict(op.params)) for op in other.operations]
 
         # Crossover point
         min_len = min(len(ops1), len(ops2))
@@ -202,18 +188,13 @@ class PipelineGenome:
     def to_dict(self) -> dict[str, Any]:
         """Serialize to dict."""
         return {
-            "operations": [
-                {"name": op.name, "params": op.params}
-                for op in self.operations
-            ],
+            "operations": [{"name": op.name, "params": op.params} for op in self.operations],
             "score_method": self.score_method,
             "fitness": self.fitness,
         }
 
     @classmethod
-    def from_dict(
-        cls, d: dict[str, Any], rng: np.random.Generator | None = None
-    ) -> PipelineGenome:
+    def from_dict(cls, d: dict[str, Any], rng: np.random.Generator | None = None) -> PipelineGenome:
         """Deserialize from dict."""
         operations = [
             OperationSpec(name=op["name"], params=op.get("params", {}))
@@ -235,9 +216,7 @@ class PipelineGenome:
         )
 
 
-def _random_params(
-    op_name: str, rng: np.random.Generator
-) -> dict[str, Any]:
+def _random_params(op_name: str, rng: np.random.Generator) -> dict[str, Any]:
     """Generate random parameters for an operation."""
     param_defs = OPERATION_PARAMS.get(op_name, {})
     params: dict[str, Any] = {}

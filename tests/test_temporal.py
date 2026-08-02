@@ -17,13 +17,17 @@ from star_pattern.core.config import DetectionConfig, PipelineConfig, TemporalCo
 from star_pattern.core.fits_handler import FITSImage
 from star_pattern.core.sky_region import EpochImage, RegionData, SkyRegion
 from star_pattern.detection.temporal import TemporalDetector
-from star_pattern.discovery.genome import DetectionGenome, GENE_DEFINITIONS
+from star_pattern.discovery.genome import GENE_DEFINITIONS, DetectionGenome
 
+# Requires live external services; excluded from the offline CI run.
+pytestmark = pytest.mark.network
 
 # --- Helpers ---
 
-def _make_wcs(crval_ra: float = 180.0, crval_dec: float = 45.0,
-              cdelt: float = -0.0002777, naxis: int = 200) -> WCS:
+
+def _make_wcs(
+    crval_ra: float = 180.0, crval_dec: float = 45.0, cdelt: float = -0.0002777, naxis: int = 200
+) -> WCS:
     """Create a simple TAN WCS centered on (crval_ra, crval_dec)."""
     header = Header()
     header["NAXIS"] = 2
@@ -52,17 +56,19 @@ def _make_fits(data: np.ndarray, wcs: WCS | None = None) -> FITSImage:
     return img
 
 
-def _add_gaussian(data: np.ndarray, cx: float, cy: float,
-                  amplitude: float = 100.0, sigma: float = 3.0) -> None:
+def _add_gaussian(
+    data: np.ndarray, cx: float, cy: float, amplitude: float = 100.0, sigma: float = 3.0
+) -> None:
     """Add a 2D Gaussian source to an image (in-place)."""
     ny, nx = data.shape
     y, x = np.mgrid[0:ny, 0:nx]
-    gauss = amplitude * np.exp(-((x - cx)**2 + (y - cy)**2) / (2 * sigma**2))
+    gauss = amplitude * np.exp(-((x - cx) ** 2 + (y - cy) ** 2) / (2 * sigma**2))
     data += gauss
 
 
-def _make_epoch(data: np.ndarray, mjd: float, wcs: WCS | None = None,
-                band: str = "r") -> EpochImage:
+def _make_epoch(
+    data: np.ndarray, mjd: float, wcs: WCS | None = None, band: str = "r"
+) -> EpochImage:
     """Create an EpochImage from array."""
     return EpochImage(
         image=_make_fits(data, wcs),
@@ -72,8 +78,9 @@ def _make_epoch(data: np.ndarray, mjd: float, wcs: WCS | None = None,
     )
 
 
-def _make_base_sky(shape: tuple[int, int] = (200, 200),
-                   n_stars: int = 20, seed: int = 42) -> np.ndarray:
+def _make_base_sky(
+    shape: tuple[int, int] = (200, 200), n_stars: int = 20, seed: int = 42
+) -> np.ndarray:
     """Create a base sky with random stars and noise."""
     rng = np.random.default_rng(seed)
     data = rng.normal(0, 1.0, shape)
@@ -85,6 +92,7 @@ def _make_base_sky(shape: tuple[int, int] = (200, 200),
 
 
 # --- Synthetic Image Tests ---
+
 
 class TestTemporalDetectorSynthetic:
     """Tests using synthetic multi-epoch images (no network)."""
@@ -119,9 +127,7 @@ class TestTemporalDetectorSynthetic:
 
         assert result["temporal_score"] > 0
         # Should detect the new source (either as new_source or brightening)
-        total_detections = (
-            result.get("n_new_sources", 0) + result.get("n_brightenings", 0)
-        )
+        total_detections = result.get("n_new_sources", 0) + result.get("n_brightenings", 0)
         assert total_detections > 0
 
     def test_detect_disappeared_source(self):
@@ -139,9 +145,7 @@ class TestTemporalDetectorSynthetic:
         result = detector.analyze([epoch1, epoch2])
 
         assert result["temporal_score"] > 0
-        total_detections = (
-            result.get("n_disappeared", 0) + result.get("n_fadings", 0)
-        )
+        total_detections = result.get("n_disappeared", 0) + result.get("n_fadings", 0)
         assert total_detections > 0
 
     def test_detect_brightening(self):
@@ -180,10 +184,12 @@ class TestTemporalDetectorSynthetic:
         _add_gaussian(data2, 104, 100, amplitude=400, sigma=3.0)
         epoch2 = _make_epoch(data2, mjd=59100.0, wcs=wcs)
 
-        detector = TemporalDetector(DetectionConfig(
-            temporal_snr_threshold=3.0,
-            temporal_dipole_max_sep=5.0,
-        ))
+        detector = TemporalDetector(
+            DetectionConfig(
+                temporal_snr_threshold=3.0,
+                temporal_dipole_max_sep=5.0,
+            )
+        )
         result = detector.analyze([epoch1, epoch2])
 
         assert result["temporal_score"] > 0
@@ -290,18 +296,12 @@ class TestTemporalDetectorSynthetic:
         # Low threshold should detect the source
         det_low = TemporalDetector(DetectionConfig(temporal_snr_threshold=3.0))
         result_low = det_low.analyze([epoch1, epoch2])
-        total_low = (
-            result_low.get("n_new_sources", 0)
-            + result_low.get("n_brightenings", 0)
-        )
+        total_low = result_low.get("n_new_sources", 0) + result_low.get("n_brightenings", 0)
 
         # Very high threshold should detect fewer or zero
         det_high = TemporalDetector(DetectionConfig(temporal_snr_threshold=50.0))
         result_high = det_high.analyze([epoch1, epoch2])
-        total_high = (
-            result_high.get("n_new_sources", 0)
-            + result_high.get("n_brightenings", 0)
-        )
+        total_high = result_high.get("n_new_sources", 0) + result_high.get("n_brightenings", 0)
 
         assert total_high <= total_low
 
@@ -393,23 +393,38 @@ class TestAnomalyExtraction:
                 "n_brightenings": 0,
                 "n_fadings": 0,
                 "n_moving": 1,
-                "new_sources": [{
-                    "sky_ra": 180.1, "sky_dec": 45.1,
-                    "cx": 100, "cy": 100, "peak_snr": 8.5,
-                    "n_epochs_detected": 1,
-                }],
-                "disappeared": [{
-                    "sky_ra": 180.2, "sky_dec": 45.2,
-                    "cx": 50, "cy": 50, "peak_snr": 6.0,
-                    "n_epochs_detected": 1,
-                }],
+                "new_sources": [
+                    {
+                        "sky_ra": 180.1,
+                        "sky_dec": 45.1,
+                        "cx": 100,
+                        "cy": 100,
+                        "peak_snr": 8.5,
+                        "n_epochs_detected": 1,
+                    }
+                ],
+                "disappeared": [
+                    {
+                        "sky_ra": 180.2,
+                        "sky_dec": 45.2,
+                        "cx": 50,
+                        "cy": 50,
+                        "peak_snr": 6.0,
+                        "n_epochs_detected": 1,
+                    }
+                ],
                 "brightenings": [],
                 "fadings": [],
-                "moving_objects": [{
-                    "sky_ra": 180.3, "sky_dec": 45.3,
-                    "cx": 75, "cy": 75, "peak_snr": 10.0,
-                    "n_epochs_detected": 2,
-                }],
+                "moving_objects": [
+                    {
+                        "sky_ra": 180.3,
+                        "sky_dec": 45.3,
+                        "cx": 75,
+                        "cy": 75,
+                        "peak_snr": 10.0,
+                        "n_epochs_detected": 2,
+                    }
+                ],
             },
             # Minimal other detector results to avoid errors
             "sources": {"n_sources": 0},
@@ -437,6 +452,7 @@ class TestAnomalyExtraction:
 
 
 # --- Genome Tests ---
+
 
 class TestGenomeTemporalGenes:
     """Test that temporal genes are correctly integrated."""
@@ -484,6 +500,7 @@ class TestGenomeTemporalGenes:
 
 # --- Config Tests ---
 
+
 class TestTemporalConfig:
     """Test TemporalConfig integration."""
 
@@ -525,6 +542,7 @@ class TestTemporalConfig:
 
 # --- Data Types Tests ---
 
+
 class TestEpochImageAndRegionData:
     """Test EpochImage dataclass and RegionData temporal support."""
 
@@ -556,6 +574,7 @@ class TestEpochImageAndRegionData:
 
 
 # --- Feature Fusion Tests ---
+
 
 class TestFeatureFusionTemporal:
     """Test that temporal features are in the feature schema."""
@@ -598,15 +617,18 @@ class TestFeatureFusionTemporal:
 
 # --- ZTF Integration Tests (network required) ---
 
+
 class TestZTFEpochImages:
     """ZTF epoch image fetch tests (skipped when IRSA unavailable)."""
 
     def _get_ztf_source(self):
         """Get a ZTF data source, skip if unavailable."""
         try:
-            from star_pattern.data.ztf import ZTFDataSource
-            from star_pattern.data.cache import DataCache
             import tempfile
+
+            from star_pattern.data.cache import DataCache
+            from star_pattern.data.ztf import ZTFDataSource
+
             cache = DataCache(tempfile.mkdtemp())
             ztf = ZTFDataSource(cache=cache)
             return ztf
@@ -665,12 +687,14 @@ class TestZTFEpochImages:
 
 # --- Cache Tests ---
 
+
 class TestCacheEpochSupport:
     """Test that cache supports epoch parameter."""
 
     def test_epoch_key_differs(self):
         """Different epochs produce different cache keys."""
         from star_pattern.data.cache import DataCache
+
         key1 = DataCache._make_key("ztf", 180.0, 45.0, 3.0, band="r", epoch="20200101")
         key2 = DataCache._make_key("ztf", 180.0, 45.0, 3.0, band="r", epoch="20200201")
         key3 = DataCache._make_key("ztf", 180.0, 45.0, 3.0, band="r")
@@ -680,6 +704,7 @@ class TestCacheEpochSupport:
     def test_epoch_empty_preserves_key(self):
         """Empty epoch produces same key as no epoch (backward compat)."""
         from star_pattern.data.cache import DataCache
+
         key1 = DataCache._make_key("ztf", 180.0, 45.0, 3.0, band="r", epoch="")
         key2 = DataCache._make_key("ztf", 180.0, 45.0, 3.0, band="r")
         assert key1 == key2
@@ -687,18 +712,21 @@ class TestCacheEpochSupport:
 
 # --- Presets Test ---
 
+
 class TestPresetsIncludeTemporal:
     """Test that presets include temporal-focused option."""
 
     def test_preset_count(self):
         """Presets include the temporal-focused preset (12 total)."""
         from star_pattern.discovery.presets import get_preset_genomes
+
         presets = get_preset_genomes()
         assert len(presets) == 12
 
     def test_temporal_preset_has_high_weight(self):
         """Last preset gives temporal the highest raw gene weight."""
         from star_pattern.discovery.presets import get_preset_genomes
+
         presets = get_preset_genomes(rng=np.random.default_rng(42))
         temporal_preset = presets[-1]
         # Check raw gene value (not normalized) -- weight_temporal should be 0.40
@@ -707,6 +735,7 @@ class TestPresetsIncludeTemporal:
 
 
 # --- Local Classifier Tests ---
+
 
 class TestLocalClassifierTemporal:
     """Test temporal classification mapping."""
@@ -737,6 +766,7 @@ class TestLocalClassifierTemporal:
 
 
 # --- Diagnostic Tests ---
+
 
 class TestTemporalDiagnostics:
     """Test that diagnostics are stored correctly after analyze()."""
@@ -851,9 +881,11 @@ class TestTemporalOverlay:
     def test_overlay_produces_figure(self):
         """overlay_temporal_analysis returns a Figure with 4+ axes."""
         import matplotlib
+
         matplotlib.use("Agg")
         import matplotlib.pyplot as plt
         from matplotlib.figure import Figure
+
         from star_pattern.visualization.pattern_overlay import overlay_temporal_analysis
 
         wcs = _make_wcs()

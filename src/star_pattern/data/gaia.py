@@ -6,15 +6,33 @@ from typing import Any
 
 import numpy as np
 
+from star_pattern.core.catalog import CatalogEntry, StarCatalog
 from star_pattern.core.fits_handler import FITSImage
 from star_pattern.core.sky_region import SkyRegion
-from star_pattern.core.catalog import CatalogEntry, StarCatalog
 from star_pattern.data.base import DataSource
 from star_pattern.data.cache import DataCache
 from star_pattern.utils.logging import get_logger
 from star_pattern.utils.retry import retry_with_backoff
 
 logger = get_logger("data.gaia")
+
+
+def _float_or_none(value: Any) -> float | None:
+    """Convert a catalog cell to float, or None when it holds no value.
+
+    Truthiness is the wrong test here. A proper motion, parallax, or
+    colour index of exactly 0.0 is a real measurement, and `if value`
+    discards it, which silently drops the source from every kinematic
+    and photometric analysis downstream. Astropy also returns masked
+    cells and NaN rather than None for absent values, so both need an
+    explicit check.
+    """
+    if value is None or value is np.ma.masked:
+        return None
+    if np.ma.is_masked(value):
+        return None
+    result = float(value)
+    return None if np.isnan(result) else result
 
 
 class GaiaDataSource(DataSource):
@@ -75,12 +93,12 @@ class GaiaDataSource(DataSource):
         ORDER BY phot_g_mean_mag ASC
         """
 
-        try:
-            job = Gaia.launch_job(query)
-            table = job.get_results()
-        except Exception as e:
-            logger.error(f"Gaia query failed: {e}")
-            return StarCatalog(source="gaia")
+        # No try/except around the query: catching here would stop the
+        # @retry_with_backoff decorator from ever seeing the failure, and
+        # would turn a Gaia outage into an empty catalog that reads as
+        # "no sources in this field".
+        job = Gaia.launch_job(query)
+        table = job.get_results()
 
         if table is None or len(table) == 0:
             logger.warning("No Gaia sources found")
@@ -88,7 +106,7 @@ class GaiaDataSource(DataSource):
 
         entries = []
         for row in table:
-            g_mag = float(row["phot_g_mean_mag"]) if row["phot_g_mean_mag"] is not None else None
+            g_mag = _float_or_none(row["phot_g_mean_mag"])
             entries.append(
                 CatalogEntry(
                     ra=float(row["ra"]),
@@ -100,14 +118,14 @@ class GaiaDataSource(DataSource):
                     source_id=str(row["source_id"]),
                     properties={
                         "G": g_mag,
-                        "BP": float(row["phot_bp_mean_mag"]) if row["phot_bp_mean_mag"] else None,
-                        "RP": float(row["phot_rp_mean_mag"]) if row["phot_rp_mean_mag"] else None,
-                        "parallax": float(row["parallax"]) if row["parallax"] else None,
-                        "parallax_error": float(row["parallax_error"]) if row["parallax_error"] else None,
-                        "pmra": float(row["pmra"]) if row["pmra"] else None,
-                        "pmdec": float(row["pmdec"]) if row["pmdec"] else None,
-                        "bp_rp": float(row["bp_rp"]) if row["bp_rp"] else None,
-                        "astro_noise": float(row["astrometric_excess_noise"]) if row["astrometric_excess_noise"] else None,
+                        "BP": _float_or_none(row["phot_bp_mean_mag"]),
+                        "RP": _float_or_none(row["phot_rp_mean_mag"]),
+                        "parallax": _float_or_none(row["parallax"]),
+                        "parallax_error": _float_or_none(row["parallax_error"]),
+                        "pmra": _float_or_none(row["pmra"]),
+                        "pmdec": _float_or_none(row["pmdec"]),
+                        "bp_rp": _float_or_none(row["bp_rp"]),
+                        "astro_noise": _float_or_none(row["astrometric_excess_noise"]),
                     },
                 )
             )
@@ -117,7 +135,10 @@ class GaiaDataSource(DataSource):
 
         # Cache the catalog
         self._cache.put_catalog(
-            "gaia", region.ra, region.dec, region.radius,
+            "gaia",
+            region.ra,
+            region.dec,
+            region.radius,
             [e.to_dict() for e in entries],
         )
 
@@ -125,7 +146,7 @@ class GaiaDataSource(DataSource):
 
     def is_available(self) -> bool:
         try:
-            from astroquery.gaia import Gaia
+            from astroquery.gaia import Gaia  # noqa: F401 - availability probe
 
             return True
         except ImportError:

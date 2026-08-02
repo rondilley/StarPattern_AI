@@ -6,11 +6,14 @@ import pytest
 from star_pattern.core.fits_handler import FITSImage
 from star_pattern.data.mosaic import Mosaicker
 
+# Requires live external services; excluded from the offline CI run.
+pytestmark = pytest.mark.network
+
 
 def _make_image_with_wcs(ra_center: float, dec_center: float, size: int = 64):
     """Create a synthetic FITSImage with a valid TAN WCS."""
-    from astropy.wcs import WCS
     from astropy.io import fits
+    from astropy.wcs import WCS
 
     rng = np.random.default_rng(int(ra_center * 1000 + dec_center * 100))
     data = rng.normal(100, 10, (size, size)).astype(np.float32)

@@ -103,12 +103,14 @@ class SersicAnalyzer:
 
         # Background estimation from corners
         corner_size = max(5, min(data.shape) // 10)
-        corners = np.concatenate([
-            data[:corner_size, :corner_size].ravel(),
-            data[:corner_size, -corner_size:].ravel(),
-            data[-corner_size:, :corner_size].ravel(),
-            data[-corner_size:, -corner_size:].ravel(),
-        ])
+        corners = np.concatenate(
+            [
+                data[:corner_size, :corner_size].ravel(),
+                data[:corner_size, -corner_size:].ravel(),
+                data[-corner_size:, :corner_size].ravel(),
+                data[-corner_size:, -corner_size:].ravel(),
+            ]
+        )
         bkg = float(np.median(corners))
         bkg_rms = float(np.std(corners))
         data_sub = data.astype(np.float64) - bkg
@@ -121,7 +123,9 @@ class SersicAnalyzer:
         # Extract azimuthally-averaged radial profile
         max_r = int(min(data.shape) * self.max_radius_frac / 2)
         radii, profile, profile_err = self._radial_profile(
-            data_sub, cx, cy,
+            data_sub,
+            cx,
+            cy,
             ellipticity=ellip_params["ellipticity"],
             pa=ellip_params["position_angle"],
             max_r=max_r,
@@ -149,7 +153,12 @@ class SersicAnalyzer:
 
             # Build 2D Sersic model and compute residuals
             model = self._build_2d_model(
-                data.shape, cx, cy, I_e, r_e, n,
+                data.shape,
+                cx,
+                cy,
+                I_e,
+                r_e,
+                n,
                 ellip_params["ellipticity"],
                 ellip_params["position_angle"],
             )
@@ -157,7 +166,11 @@ class SersicAnalyzer:
 
             # Analyze residual for substructure
             residual_features = self._analyze_residuals(
-                residual, bkg_rms, cx, cy, r_e,
+                residual,
+                bkg_rms,
+                cx,
+                cy,
+                r_e,
             )
             results["residual_features"] = residual_features
 
@@ -181,11 +194,14 @@ class SersicAnalyzer:
         return results
 
     def _compute_ellipticity(
-        self, data: np.ndarray, cx: int, cy: int,
+        self,
+        data: np.ndarray,
+        cx: int,
+        cy: int,
     ) -> dict[str, float]:
         """Compute ellipticity and position angle from intensity-weighted moments."""
         max_r = min(data.shape) // 4
-        y, x = np.mgrid[:data.shape[0], :data.shape[1]]
+        y, x = np.mgrid[: data.shape[0], : data.shape[1]]
         r = np.sqrt((x - cx) ** 2 + (y - cy) ** 2)
         mask = (r < max_r) & (data > 0)
 
@@ -231,7 +247,7 @@ class SersicAnalyzer:
         max_r: int = 100,
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Extract azimuthally-averaged radial profile with elliptical apertures."""
-        y, x = np.mgrid[:data.shape[0], :data.shape[1]]
+        y, x = np.mgrid[: data.shape[0], : data.shape[1]]
         dx = (x - cx).astype(np.float64)
         dy = (y - cy).astype(np.float64)
 
@@ -242,7 +258,7 @@ class SersicAnalyzer:
 
         # Elliptical radius
         q = max(1.0 - ellipticity, 0.1)  # axis ratio
-        r_ellip = np.sqrt(dx_rot ** 2 + (dy_rot / q) ** 2)
+        r_ellip = np.sqrt(dx_rot**2 + (dy_rot / q) ** 2)
 
         # Bin into radial annuli
         n_bins = min(self.n_radial_bins, max_r)
@@ -295,7 +311,7 @@ class SersicAnalyzer:
 
         # Initial guesses
         I_e_guess = float(I_fit[len(I_fit) // 2])  # intensity at mid-radius
-        r_e_guess = float(r_fit[len(r_fit) // 2])   # half-light at mid-radius
+        r_e_guess = float(r_fit[len(r_fit) // 2])  # half-light at mid-radius
         n_guess = 2.0  # moderate profile
 
         try:
@@ -361,7 +377,7 @@ class SersicAnalyzer:
         dy_rot = -dx * np.sin(pa_rad) + dy * np.cos(pa_rad)
 
         q = max(1.0 - ellipticity, 0.1)
-        r_ellip = np.sqrt(dx_rot ** 2 + (dy_rot / q) ** 2)
+        r_ellip = np.sqrt(dx_rot**2 + (dy_rot / q) ** 2)
 
         model_full = np.zeros(shape, dtype=np.float64)
         cutout_model = sersic_1d(r_ellip, I_e, r_e, n)
@@ -406,15 +422,17 @@ class SersicAnalyzer:
             mean_y = float(np.mean(ys))
             dist_from_center = float(np.sqrt((mean_x - cx) ** 2 + (mean_y - cy) ** 2))
 
-            pos_candidates.append({
-                "type": "excess_light",
-                "x": mean_x,
-                "y": mean_y,
-                "area_px": area,
-                "peak_snr": peak_snr,
-                "dist_from_center": dist_from_center,
-                "dist_in_re": dist_from_center / max(r_e, 1),
-            })
+            pos_candidates.append(
+                {
+                    "type": "excess_light",
+                    "x": mean_x,
+                    "y": mean_y,
+                    "area_px": area,
+                    "peak_snr": peak_snr,
+                    "dist_from_center": dist_from_center,
+                    "dist_in_re": dist_from_center / max(r_e, 1),
+                }
+            )
 
         # Keep top 20 by SNR so the most significant features survive
         pos_candidates.sort(key=lambda f: abs(f["peak_snr"]), reverse=True)
@@ -435,16 +453,16 @@ class SersicAnalyzer:
             mean_x = float(np.mean(xs))
             mean_y = float(np.mean(ys))
 
-            neg_candidates.append({
-                "type": "light_deficit",
-                "x": mean_x,
-                "y": mean_y,
-                "area_px": area,
-                "peak_snr": peak_snr,
-                "dist_from_center": float(
-                    np.sqrt((mean_x - cx) ** 2 + (mean_y - cy) ** 2)
-                ),
-            })
+            neg_candidates.append(
+                {
+                    "type": "light_deficit",
+                    "x": mean_x,
+                    "y": mean_y,
+                    "area_px": area,
+                    "peak_snr": peak_snr,
+                    "dist_from_center": float(np.sqrt((mean_x - cx) ** 2 + (mean_y - cy) ** 2)),
+                }
+            )
 
         # Keep top 10 by absolute SNR
         neg_candidates.sort(key=lambda f: abs(f["peak_snr"]), reverse=True)

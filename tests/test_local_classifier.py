@@ -3,9 +3,9 @@
 import pytest
 
 from star_pattern.detection.local_classifier import (
-    LocalClassifier,
     DETECTOR_TO_CLASS,
     FOLLOW_UP_TEMPLATES,
+    LocalClassifier,
 )
 
 
@@ -120,9 +120,9 @@ class TestLocalClassifier:
     def test_all_detector_classes_have_followup(self):
         """Every classification in DETECTOR_TO_CLASS has follow-up templates."""
         for _detector, classification in DETECTOR_TO_CLASS.items():
-            assert classification in FOLLOW_UP_TEMPLATES, (
-                f"Missing follow-up template for {classification}"
-            )
+            assert (
+                classification in FOLLOW_UP_TEMPLATES
+            ), f"Missing follow-up template for {classification}"
 
     def test_detector_scores_returned(self):
         """Detector scores are included in result."""

@@ -12,10 +12,19 @@
         "gabor_orientations": 8,
         "anomaly_contamination": 0.05,
         "ensemble_weights": {
-            "classical": 0.2,
-            "morphology": 0.3,
-            "anomaly": 0.3,
-            "distribution": 0.2
+            "classical": 0.08,
+            "morphology": 0.08,
+            "anomaly": 0.09,
+            "lens": 0.08,
+            "distribution": 0.1,
+            "galaxy": 0.08,
+            "kinematic": 0.08,
+            "transient": 0.04,
+            "sersic": 0.07,
+            "wavelet": 0.08,
+            "population": 0.06,
+            "variability": 0.08,
+            "temporal": 0.08
         }
     },
     "evolution": {
@@ -26,10 +35,11 @@
         "tournament_size": 3,
         "elite_count": 2,
         "fitness_weights": {
-            "anomaly": 0.4,
-            "significance": 0.3,
-            "novelty": 0.2,
-            "diversity": 0.1
+            "anomaly": 0.35,
+            "significance": 0.25,
+            "novelty": 0.15,
+            "diversity": 0.1,
+            "recovery": 0.15
         }
     },
     "llm": {

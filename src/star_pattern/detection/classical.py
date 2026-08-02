@@ -8,7 +8,11 @@ import numpy as np
 from scipy import ndimage
 from scipy.signal import fftconvolve
 
-from star_pattern.utils.gpu import get_array_module, to_device, to_numpy
+from star_pattern.utils.gpu import (
+    gpu_edge_magnitude,
+    gpu_fft2_power,
+    gpu_fftconvolve_batch,
+)
 from star_pattern.utils.logging import get_logger
 
 logger = get_logger("detection.classical")
@@ -40,9 +44,7 @@ class GaborFilterBank:
                 self._kernels.append(kernel)
 
     @staticmethod
-    def _make_gabor(
-        size: int, sigma: float, theta: float, frequency: float
-    ) -> np.ndarray:
+    def _make_gabor(size: int, sigma: float, theta: float, frequency: float) -> np.ndarray:
         """Create a single Gabor kernel."""
         half = size // 2
         y, x = np.mgrid[-half : half + 1, -half : half + 1]
@@ -65,39 +67,24 @@ class GaborFilterBank:
             'mean_energy' (average filter energy),
             'dominant_orientation' (angle of strongest response).
         """
-        xp, use_gpu = get_array_module()
+        # One batched GPU call for the whole filter bank; the image FFT is
+        # computed once per kernel shape instead of once per kernel.
+        batched = gpu_fftconvolve_batch(image.astype(np.float32), self._kernels)
 
-        if use_gpu:
-            try:
-                import cupyx.scipy.signal
-
-                gpu_image = to_device(image.astype(np.float32), xp)
-                responses_gpu = []
-                for kernel in self._kernels:
-                    gpu_kernel = to_device(kernel, xp)
-                    resp = cupyx.scipy.signal.fftconvolve(gpu_image, gpu_kernel, mode="same")
-                    responses_gpu.append(xp.abs(resp))
-
-                stack = xp.stack(responses_gpu, axis=0)
-                max_response = to_numpy(xp.max(stack, axis=0))
-                mean_energy = to_numpy(xp.mean(stack, axis=0))
-
-                best_idx = to_numpy(xp.argmax(stack, axis=0))
-                responses = [to_numpy(r) for r in responses_gpu]
-            except Exception:
-                # Fall back to CPU if GPU fails
-                use_gpu = False
-
-        if not use_gpu:
+        if batched is not None:
+            stack, responses = batched
+        else:
             responses = []
             for kernel in self._kernels:
                 resp = fftconvolve(image, kernel, mode="same")
                 responses.append(np.abs(resp))
-
             stack = np.stack(responses, axis=0)
-            max_response = np.max(stack, axis=0)
-            mean_energy = np.mean(stack, axis=0)
-            best_idx = np.argmax(stack, axis=0)
+
+        # Reductions run on the host in both paths, so the two branches
+        # cannot drift apart numerically.
+        max_response = np.max(stack, axis=0)
+        mean_energy = np.mean(stack, axis=0)
+        best_idx = np.argmax(stack, axis=0)
 
         # Dominant orientation at each pixel
         n_per_freq = self.n_orientations
@@ -118,16 +105,10 @@ class FFTAnalyzer:
 
     @staticmethod
     def power_spectrum(image: np.ndarray) -> np.ndarray:
-        """Compute 2D power spectrum. Uses CuPy GPU when available."""
-        xp, use_gpu = get_array_module()
-        if use_gpu:
-            try:
-                gpu_img = to_device(image, xp)
-                f = xp.fft.fft2(gpu_img)
-                f_shift = xp.fft.fftshift(f)
-                return to_numpy(xp.abs(f_shift) ** 2)
-            except Exception:
-                pass
+        """Compute 2D power spectrum. Uses the GPU when available."""
+        spectrum = gpu_fft2_power(image)
+        if spectrum is not None:
+            return spectrum
         f = np.fft.fft2(image)
         f_shift = np.fft.fftshift(f)
         return np.abs(f_shift) ** 2
@@ -246,10 +227,7 @@ class HoughArcDetector:
             shifted_x = edge_points[:, 1][None, :] - dx_all[:, None]
 
             # Bounds check
-            valid = (
-                (shifted_y >= 0) & (shifted_y < h)
-                & (shifted_x >= 0) & (shifted_x < w)
-            )
+            valid = (shifted_y >= 0) & (shifted_y < h) & (shifted_x >= 0) & (shifted_x < w)
 
             # Flatten valid votes and accumulate in one pass
             y_valid = shifted_y[valid]
@@ -285,22 +263,12 @@ class HoughArcDetector:
     def _canny_edges(image: np.ndarray, sigma: float = 2.0) -> np.ndarray:
         """Simple edge detection using gradient magnitude.
 
-        Uses CuPy GPU acceleration when available.
+        Uses the GPU when available.
         """
-        xp, use_gpu = get_array_module()
-        if use_gpu:
-            try:
-                import cupyx.scipy.ndimage as cu_ndimage
+        edges = gpu_edge_magnitude(image, sigma=sigma)
+        if edges is not None:
+            return edges
 
-                gpu_img = to_device(image.astype(np.float64), xp)
-                smoothed = cu_ndimage.gaussian_filter(gpu_img, sigma=sigma)
-                gy = cu_ndimage.sobel(smoothed, axis=0)
-                gx = cu_ndimage.sobel(smoothed, axis=1)
-                magnitude = xp.hypot(gx, gy)
-                threshold = float(xp.percentile(magnitude, 95))
-                return to_numpy(magnitude > threshold)
-            except Exception:
-                pass
         smoothed = ndimage.gaussian_filter(image.astype(np.float64), sigma=sigma)
         gy = ndimage.sobel(smoothed, axis=0)
         gx = ndimage.sobel(smoothed, axis=1)
@@ -337,17 +305,21 @@ class ClassicalDetector:
         """
         logger.debug(f"Running classical detection on {image.shape}")
 
-        # Scale Hough radii by pixel scale if known
+        # Scale Hough radii by pixel scale if known. The scaled detector
+        # is a local, NOT assigned to self.hough: this instance is built
+        # once and reused for every image, so replacing self.hough here
+        # would let one image with a WCS permanently redefine the radii
+        # for every image after it, including images with no WCS at all.
+        hough = self.hough
         if pixel_scale_arcsec and pixel_scale_arcsec > 0:
-            min_r = max(3, int(3.0 / pixel_scale_arcsec))
-            max_r = max(10, int(30.0 / pixel_scale_arcsec))
-            self.hough = HoughArcDetector(
-                min_radius=min_r, max_radius=max_r
+            hough = HoughArcDetector(
+                min_radius=max(3, int(3.0 / pixel_scale_arcsec)),
+                max_radius=max(10, int(30.0 / pixel_scale_arcsec)),
             )
 
         gabor_result = self.gabor.apply(image)
         fft_result = self.fft.analyze(image)
-        arcs = self.hough.detect_arcs(image)
+        arcs = hough.detect_arcs(image)
 
         # Compute summary scores
         # Normalize gabor_score to [0,1] by dividing by image intensity range

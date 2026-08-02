@@ -1,17 +1,16 @@
 """Tests for detection modules."""
 
 import numpy as np
-import pytest
 
-from star_pattern.core.fits_handler import FITSImage
 from star_pattern.core.config import DetectionConfig
-from star_pattern.detection.classical import GaborFilterBank, FFTAnalyzer, ClassicalDetector
-from star_pattern.detection.source_extraction import SourceExtractor
-from star_pattern.detection.morphology import MorphologyAnalyzer
+from star_pattern.core.fits_handler import FITSImage
 from star_pattern.detection.anomaly import AnomalyDetector
-from star_pattern.detection.lens_detector import LensDetector
+from star_pattern.detection.classical import FFTAnalyzer, GaborFilterBank
 from star_pattern.detection.distribution import DistributionAnalyzer
 from star_pattern.detection.ensemble import EnsembleDetector
+from star_pattern.detection.lens_detector import LensDetector
+from star_pattern.detection.morphology import MorphologyAnalyzer
+from star_pattern.detection.source_extraction import SourceExtractor
 
 
 class TestGaborFilterBank:

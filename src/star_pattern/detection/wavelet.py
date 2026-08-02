@@ -25,7 +25,7 @@ from typing import Any
 import numpy as np
 from scipy import ndimage
 
-from star_pattern.utils.gpu import get_array_module, to_device, to_numpy
+from star_pattern.utils.gpu import gpu_separable_convolve
 from star_pattern.utils.logging import get_logger
 
 logger = get_logger("detection.wavelet")
@@ -51,23 +51,17 @@ def _atrous_convolve_2d(data: np.ndarray, scale: int) -> np.ndarray:
     Returns:
         Smoothed image at this scale.
     """
-    step = 2 ** scale
+    step = 2**scale
     # Build dilated 1D kernel
     kernel_1d = np.zeros(1 + (len(B3_SPLINE_1D) - 1) * step, dtype=np.float64)
     kernel_1d[::step] = B3_SPLINE_1D
 
-    xp, use_gpu = get_array_module()
-    if use_gpu:
-        try:
-            import cupyx.scipy.ndimage as cu_ndimage
-
-            gpu_data = to_device(data, xp) if isinstance(data, np.ndarray) else data
-            gpu_kernel = to_device(kernel_1d, xp)
-            smoothed = cu_ndimage.convolve1d(gpu_data, gpu_kernel, axis=1, mode="reflect")
-            smoothed = cu_ndimage.convolve1d(smoothed, gpu_kernel, axis=0, mode="reflect")
-            return to_numpy(smoothed)
-        except Exception:
-            pass
+    # Torch-based GPU path. Works on both CUDA and ROCm, and the backend
+    # probe behind it is cached, so a 5-scale decomposition no longer
+    # re-imports and re-probes the GPU once per scale.
+    smoothed = gpu_separable_convolve(data, kernel_1d, mode="reflect")
+    if smoothed is not None:
+        return smoothed
 
     # Separable 2D convolution (row then column)
     smoothed = ndimage.convolve1d(data, kernel_1d, axis=1, mode="reflect")
@@ -161,7 +155,7 @@ class WaveletAnalyzer:
         multiscale_detections = []
 
         for j, detail in enumerate(details):
-            scale_px = 2 ** j
+            scale_px = 2**j
             scale_arcsec = scale_px * pixel_scale_arcsec if pixel_scale_arcsec else None
 
             # Noise estimation at this scale
@@ -176,7 +170,7 @@ class WaveletAnalyzer:
             total_significant += n_significant
 
             # Energy at this scale
-            energy = float(np.sum(detail ** 2))
+            energy = float(np.sum(detail**2))
             scale_energies.append(energy)
 
             # Find significant connected regions at this scale
@@ -188,7 +182,9 @@ class WaveletAnalyzer:
                 # raster-scan bias from capping label indices)
                 label_indices = np.arange(1, n_features + 1)
                 areas = ndimage.sum(
-                    significant, labeled, label_indices,
+                    significant,
+                    labeled,
+                    label_indices,
                 ).astype(int)
 
                 # Filter by minimum area
@@ -227,9 +223,7 @@ class WaveletAnalyzer:
                         "area_px": int(area),
                         "peak_significance": peak_sig,
                         "peak_snr": peak_sig,
-                        "is_positive": bool(
-                            np.mean(detail[sl][local_region]) > 0
-                        ),
+                        "is_positive": bool(np.mean(detail[sl][local_region]) > 0),
                     }
                     if scale_arcsec is not None:
                         feature["scale_arcsec"] = scale_arcsec
@@ -261,15 +255,14 @@ class WaveletAnalyzer:
 
         # Detect multi-scale anomalies (features present at multiple scales)
         multiscale_objects = self._find_multiscale_objects(
-            multiscale_detections, n_scales,
+            multiscale_detections,
+            n_scales,
         )
         results["multiscale_objects"] = multiscale_objects
 
         # Scale concentration: where is most energy?
         if scale_energies:
-            weighted_scale = sum(
-                j * e for j, e in enumerate(scale_energies)
-            ) / total_energy
+            weighted_scale = sum(j * e for j, e in enumerate(scale_energies)) / total_energy
             results["mean_scale"] = float(weighted_scale)
         else:
             results["mean_scale"] = 0.0
@@ -319,9 +312,7 @@ class WaveletAnalyzer:
         used = set()
 
         # Sort by peak significance
-        sorted_dets = sorted(
-            detections, key=lambda d: d["peak_significance"], reverse=True
-        )
+        sorted_dets = sorted(detections, key=lambda d: d["peak_significance"], reverse=True)
 
         # Build KD-tree for O(n log n) spatial queries
         positions = np.array([[d["x"], d["y"]] for d in sorted_dets])
@@ -337,7 +328,7 @@ class WaveletAnalyzer:
             used.add(i)
 
             # Query tree for nearby detections (use max possible match radius)
-            max_match_radius = max(2 ** n_scales * 2, 5)
+            max_match_radius = max(2**n_scales * 2, 5)
             neighbors = tree.query_ball_point([det["x"], det["y"]], max_match_radius)
 
             for j in neighbors:
@@ -356,17 +347,17 @@ class WaveletAnalyzer:
 
             if len(scales_present) >= 2:
                 # Multi-scale detection
-                objects.append({
-                    "x": float(np.mean([d["x"] for d in group])),
-                    "y": float(np.mean([d["y"] for d in group])),
-                    "n_scales": len(scales_present),
-                    "scales": sorted(scales_present),
-                    "max_significance": float(
-                        max(d["peak_significance"] for d in group)
-                    ),
-                    "total_area": sum(d["area_px"] for d in group),
-                    "is_extended": max(scales_present) >= 3,
-                })
+                objects.append(
+                    {
+                        "x": float(np.mean([d["x"] for d in group])),
+                        "y": float(np.mean([d["y"] for d in group])),
+                        "n_scales": len(scales_present),
+                        "scales": sorted(scales_present),
+                        "max_significance": float(max(d["peak_significance"] for d in group)),
+                        "total_area": sum(d["area_px"] for d in group),
+                        "is_extended": max(scales_present) >= 3,
+                    }
+                )
 
         objects.sort(key=lambda o: o["max_significance"], reverse=True)
         return objects[:30]
@@ -381,8 +372,7 @@ class WaveletAnalyzer:
 
         # Extended objects (detected at coarse scales) are interesting
         n_extended = sum(
-            1 for obj in results.get("multiscale_objects", [])
-            if obj.get("is_extended", False)
+            1 for obj in results.get("multiscale_objects", []) if obj.get("is_extended", False)
         )
         score += min(n_extended / 5, 0.2)
 

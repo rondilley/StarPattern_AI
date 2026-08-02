@@ -9,6 +9,7 @@ from scipy import ndimage
 
 from star_pattern.core.catalog import StarCatalog
 from star_pattern.core.config import DetectionConfig
+from star_pattern.detection.base import RECOVERABLE_DETECTOR_EXCEPTIONS
 from star_pattern.utils.logging import get_logger
 
 logger = get_logger("detection.galaxy")
@@ -46,20 +47,24 @@ class GalaxyDetector:
         Returns:
             Dict with galaxy_score and sub-results.
         """
-        self._pixel_scale = pixel_scale_arcsec
+        # Pixel scale is a property of this image, so it is threaded through
+        # as an argument rather than stored on self. The ensemble builds one
+        # GalaxyDetector and reuses it for every image in a run, so per-image
+        # state on the instance leaks into later images and is unsafe if this
+        # detector ever moves into the parallel pool.
         results: dict[str, Any] = {}
 
         try:
             tidal = self._detect_tidal_features(data)
             results["tidal_features"] = tidal
-        except Exception as e:
+        except RECOVERABLE_DETECTOR_EXCEPTIONS as e:
             logger.warning(f"Tidal feature detection failed: {e}")
             results["tidal_features"] = []
 
         try:
-            mergers = self._detect_mergers(data)
+            mergers = self._detect_mergers(data, pixel_scale_arcsec)
             results["merger_candidates"] = mergers
-        except Exception as e:
+        except RECOVERABLE_DETECTOR_EXCEPTIONS as e:
             logger.warning(f"Merger detection failed: {e}")
             results["merger_candidates"] = []
 
@@ -68,7 +73,7 @@ class GalaxyDetector:
             try:
                 color_outliers = self._detect_color_anomalies(catalog)
                 results["color_outliers"] = color_outliers
-            except Exception as e:
+            except RECOVERABLE_DETECTOR_EXCEPTIONS as e:
                 logger.warning(f"Color anomaly detection failed: {e}")
                 results["color_outliers"] = []
         else:
@@ -81,12 +86,15 @@ class GalaxyDetector:
         total_detections = n_tidal + n_mergers + n_color
 
         # Score: saturates around 1.0 with multiple detections
-        galaxy_score = float(np.clip(
-            0.3 * min(n_tidal, 3) / 3.0
-            + 0.4 * min(n_mergers, 2) / 2.0
-            + 0.3 * min(n_color, 5) / 5.0,
-            0.0, 1.0,
-        ))
+        galaxy_score = float(
+            np.clip(
+                0.3 * min(n_tidal, 3) / 3.0
+                + 0.4 * min(n_mergers, 2) / 2.0
+                + 0.3 * min(n_color, 5) / 5.0,
+                0.0,
+                1.0,
+            )
+        )
 
         results["galaxy_score"] = galaxy_score
         results["n_detections"] = total_detections
@@ -114,8 +122,8 @@ class GalaxyDetector:
         filter_size = max(3, int(smooth_sigma))
         abs_residual = np.abs(residual)
         local_mean = ndimage.uniform_filter(abs_residual, size=filter_size)
-        local_sq_mean = ndimage.uniform_filter(abs_residual ** 2, size=filter_size)
-        local_rms = np.sqrt(np.maximum(local_sq_mean - local_mean ** 2, 0))
+        local_sq_mean = ndimage.uniform_filter(abs_residual**2, size=filter_size)
+        local_rms = np.sqrt(np.maximum(local_sq_mean - local_mean**2, 0))
         local_rms = np.where(local_rms > 0, local_rms, 1.0)
         snr_map = residual / local_rms
 
@@ -128,7 +136,7 @@ class GalaxyDetector:
             theta = angle_idx * np.pi / 4
             kernel_size = int(smooth_sigma * 3) | 1  # ensure odd
             half = kernel_size // 2
-            y, x = np.mgrid[-half:half + 1, -half:half + 1]
+            y, x = np.mgrid[-half : half + 1, -half : half + 1]
             sigma_gabor = smooth_sigma
             gabor = np.exp(-(x**2 + y**2) / (2 * sigma_gabor**2)) * np.cos(
                 2 * np.pi * freq * (x * np.cos(theta) + y * np.sin(theta))
@@ -155,21 +163,25 @@ class GalaxyDetector:
                     continue
                 ys, xs = np.where(region)
                 peak_strength = float(np.max(np.abs(response[region])))
-                features.append({
-                    "type": "tidal",
-                    "x": float(np.mean(xs)),
-                    "y": float(np.mean(ys)),
-                    "area": int(area),
-                    "orientation": float(theta),
-                    "strength": peak_strength,
-                    "tidal_snr": float(peak_strength / max(resp_std, 1e-10)),
-                })
+                features.append(
+                    {
+                        "type": "tidal",
+                        "x": float(np.mean(xs)),
+                        "y": float(np.mean(ys)),
+                        "area": int(area),
+                        "orientation": float(theta),
+                        "strength": peak_strength,
+                        "tidal_snr": float(peak_strength / max(resp_std, 1e-10)),
+                    }
+                )
 
         # Deduplicate nearby detections
         features = _deduplicate_detections(features, min_dist=smooth_sigma)
         return features
 
-    def _detect_mergers(self, data: np.ndarray) -> list[dict[str, Any]]:
+    def _detect_mergers(
+        self, data: np.ndarray, pixel_scale_arcsec: float | None = None
+    ) -> list[dict[str, Any]]:
         """Detect merger candidates via double-nucleus and asymmetry analysis.
 
         Finds bright compact cores within a galaxy footprint. Two or more
@@ -182,9 +194,8 @@ class GalaxyDetector:
         # Find bright peaks (potential nuclei)
         # Scale filter kernel by pixel scale: ~4 arcsec filter radius
         filter_size = 11
-        ps = getattr(self, "_pixel_scale", None)
-        if ps and ps > 0:
-            filter_size = max(5, int(4.0 / ps)) | 1  # ensure odd
+        if pixel_scale_arcsec and pixel_scale_arcsec > 0:
+            filter_size = max(5, int(4.0 / pixel_scale_arcsec)) | 1  # ensure odd
         smooth = ndimage.gaussian_filter(data.astype(np.float64), sigma=2.0)
         local_max = ndimage.maximum_filter(smooth, size=filter_size)
         threshold = np.percentile(smooth, 95)
@@ -229,10 +240,8 @@ class GalaxyDetector:
             border_width = min(5, min(cutout.shape) // 4)
             if border_width >= 1:
                 border_mask = np.ones(cutout.shape, dtype=bool)
-                if (cutout.shape[0] > 2 * border_width
-                        and cutout.shape[1] > 2 * border_width):
-                    border_mask[border_width:-border_width,
-                                border_width:-border_width] = False
+                if cutout.shape[0] > 2 * border_width and cutout.shape[1] > 2 * border_width:
+                    border_mask[border_width:-border_width, border_width:-border_width] = False
                 bg_level = np.median(cutout[border_mask])
                 bg_rms = np.std(cutout[border_mask])
                 cutout = cutout - bg_level
@@ -251,33 +260,35 @@ class GalaxyDetector:
             total_flux = np.sum(np.abs(cutout_trim))
             if total_flux < 1e-10:
                 continue
-            asymmetry = float(
-                np.sum(np.abs(cutout_trim - rotated_trim)) / (2.0 * total_flux)
-            )
+            asymmetry = float(np.sum(np.abs(cutout_trim - rotated_trim)) / (2.0 * total_flux))
 
             if asymmetry > self.asymmetry_threshold:
                 p1_brightness = float(smooth[peak_coords[i][0], peak_coords[i][1]])
                 p2_brightness = float(smooth[peak_coords[j][0], peak_coords[j][1]])
-                mergers.append({
-                    "type": "merger",
-                    "nucleus_1": {
-                        "y": int(peak_coords[i][0]),
-                        "x": int(peak_coords[i][1]),
-                    },
-                    "nucleus_2": {
-                        "y": int(peak_coords[j][0]),
-                        "x": int(peak_coords[j][1]),
-                    },
-                    "separation_px": float(dist),
-                    "asymmetry": asymmetry,
-                    "asymmetry_sigma": float(
-                        asymmetry / max(self.asymmetry_threshold, 1e-10)
-                    ),
-                    "flux_ratio": float(
-                        min(p1_brightness, p2_brightness)
-                        / max(p1_brightness, p2_brightness)
-                    ) if max(p1_brightness, p2_brightness) > 0 else 0.0,
-                })
+                mergers.append(
+                    {
+                        "type": "merger",
+                        "nucleus_1": {
+                            "y": int(peak_coords[i][0]),
+                            "x": int(peak_coords[i][1]),
+                        },
+                        "nucleus_2": {
+                            "y": int(peak_coords[j][0]),
+                            "x": int(peak_coords[j][1]),
+                        },
+                        "separation_px": float(dist),
+                        "asymmetry": asymmetry,
+                        "asymmetry_sigma": float(asymmetry / max(self.asymmetry_threshold, 1e-10)),
+                        "flux_ratio": (
+                            float(
+                                min(p1_brightness, p2_brightness)
+                                / max(p1_brightness, p2_brightness)
+                            )
+                            if max(p1_brightness, p2_brightness) > 0
+                            else 0.0
+                        ),
+                    }
+                )
 
             # Cap output to avoid memory blowup
             if len(mergers) >= 50:
@@ -346,16 +357,18 @@ class GalaxyDetector:
             for k, (dev, idx) in enumerate(zip(deviations, bin_indices)):
                 if dev > self.color_sigma:
                     entry = catalog.entries[idx]
-                    outliers.append({
-                        "type": "color_outlier",
-                        "source_id": entry.source_id,
-                        "ra": entry.ra,
-                        "dec": entry.dec,
-                        "mag": entry.mag,
-                        "color": float(bin_colors[k]),
-                        "median_color": float(median_color),
-                        "deviation_sigma": float(dev),
-                    })
+                    outliers.append(
+                        {
+                            "type": "color_outlier",
+                            "source_id": entry.source_id,
+                            "ra": entry.ra,
+                            "dec": entry.dec,
+                            "mag": entry.mag,
+                            "color": float(bin_colors[k]),
+                            "median_color": float(median_color),
+                            "deviation_sigma": float(dev),
+                        }
+                    )
 
         return outliers
 

@@ -44,9 +44,7 @@ class VariabilityAnalyzer:
             if lc and isinstance(lc, dict):
                 # Check if any band has enough epochs
                 has_enough = any(
-                    len(pts) >= self.min_epochs
-                    for pts in lc.values()
-                    if isinstance(pts, list)
+                    len(pts) >= self.min_epochs for pts in lc.values() if isinstance(pts, list)
                 )
                 if has_enough:
                     sources_with_lc.append(entry)
@@ -85,7 +83,9 @@ class VariabilityAnalyzer:
                 outbursts = self._detect_outbursts(times, mags, errs)
 
                 # Keep the band with highest chi2_reduced
-                if best_var_index is None or var_index.get("chi2_reduced", 0) > best_var_index.get("chi2_reduced", 0):
+                if best_var_index is None or var_index.get("chi2_reduced", 0) > best_var_index.get(
+                    "chi2_reduced", 0
+                ):
                     best_var_index = var_index
                     best_periodogram = periodogram
                     best_outbursts = outbursts
@@ -138,9 +138,7 @@ class VariabilityAnalyzer:
             frac_variable = n_variable / len(sources_with_lc)
             top_scores = sorted(all_scores, reverse=True)[:10]
             mean_top = float(np.mean(top_scores))
-            variability_score = float(np.clip(
-                0.4 * frac_variable + 0.6 * mean_top, 0, 1
-            ))
+            variability_score = float(np.clip(0.4 * frac_variable + 0.6 * mean_top, 0, 1))
         else:
             variability_score = 0.0
 
@@ -189,7 +187,7 @@ class VariabilityAnalyzer:
             }
 
         # Weighted mean magnitude
-        weights = 1.0 / (errs ** 2 + 1e-10)
+        weights = 1.0 / (errs**2 + 1e-10)
         wmean = float(np.average(mags, weights=weights))
 
         # Weighted standard deviation
@@ -381,12 +379,14 @@ class VariabilityAnalyzer:
             deviation = (baseline[i] - sorted_mags[i]) / local_sigma[i]
             if abs(deviation) > threshold:
                 outburst_type = "brightening" if deviation > 0 else "fading"
-                outbursts.append({
-                    "mjd": float(sorted_times[i]),
-                    "mag": float(sorted_mags[i]),
-                    "deviation_sigma": float(deviation),
-                    "type": outburst_type,
-                })
+                outbursts.append(
+                    {
+                        "mjd": float(sorted_times[i]),
+                        "mag": float(sorted_mags[i]),
+                        "deviation_sigma": float(deviation),
+                        "type": outburst_type,
+                    }
+                )
 
         return outbursts
 
@@ -467,10 +467,13 @@ class VariabilityAnalyzer:
         n_out = len(outbursts)
         outburst_score = float(np.clip(n_out / 5.0, 0, 1))
 
-        return float(np.clip(
-            0.5 * chi2_score + 0.3 * period_score + 0.2 * outburst_score,
-            0, 1,
-        ))
+        return float(
+            np.clip(
+                0.5 * chi2_score + 0.3 * period_score + 0.2 * outburst_score,
+                0,
+                1,
+            )
+        )
 
     def _analyze_from_stats(self, catalog: StarCatalog) -> dict[str, Any]:
         """Analyze variability using pre-computed ZTF object statistics.
@@ -516,7 +519,11 @@ class VariabilityAnalyzer:
                 "weighted_stdev": magrms,
                 "chi2_reduced": chi2_reduced,
                 "iqr": 0.0,
-                "eta": stats.get("vonneumannratio") if stats.get("vonneumannratio") is not None else 2.0,
+                "eta": (
+                    stats.get("vonneumannratio")
+                    if stats.get("vonneumannratio") is not None
+                    else 2.0
+                ),
                 "amplitude": stats.get("maxmag", 0.0) - stats.get("minmag", 0.0),
                 "median_abs_dev": stats.get("medianabsdev", 0.0),
                 "is_variable": chi2_reduced > self.significance_threshold,
@@ -538,20 +545,18 @@ class VariabilityAnalyzer:
             # rapid variability worth flagging for classification
             pseudo_outbursts: list[dict[str, Any]] = []
             if stats.get("maxslope", 0.0) > 1.0:
-                pseudo_outbursts.append({
-                    "mjd": 0.0,
-                    "mag": 0.0,
-                    "deviation_sigma": stats["maxslope"],
-                    "type": "brightening",
-                })
+                pseudo_outbursts.append(
+                    {
+                        "mjd": 0.0,
+                        "mag": 0.0,
+                        "deviation_sigma": stats["maxslope"],
+                        "type": "brightening",
+                    }
+                )
 
-            classification = self._classify_variable(
-                var_index, periodogram, pseudo_outbursts
-            )
+            classification = self._classify_variable(var_index, periodogram, pseudo_outbursts)
 
-            source_score = self._source_variability_score(
-                var_index, periodogram, pseudo_outbursts
-            )
+            source_score = self._source_variability_score(var_index, periodogram, pseudo_outbursts)
             all_scores.append(source_score)
 
             filtercode = stats.get("filtercode", "r")
@@ -584,9 +589,7 @@ class VariabilityAnalyzer:
             frac_variable = n_variable / len(stats_sources)
             top_scores = sorted(all_scores, reverse=True)[:10]
             mean_top = float(np.mean(top_scores))
-            variability_score = float(np.clip(
-                0.4 * frac_variable + 0.6 * mean_top, 0, 1
-            ))
+            variability_score = float(np.clip(0.4 * frac_variable + 0.6 * mean_top, 0, 1))
         else:
             variability_score = 0.0
 

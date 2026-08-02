@@ -1,14 +1,14 @@
 """Tests for catalog caching across runs."""
 
 import json
-from pathlib import Path
 
-import numpy as np
 import pytest
 
-from star_pattern.core.catalog import CatalogEntry, StarCatalog
-from star_pattern.core.sky_region import SkyRegion
+from star_pattern.core.catalog import CatalogEntry
 from star_pattern.data.cache import DataCache
+
+# Requires live external services; excluded from the offline CI run.
+pytestmark = pytest.mark.network
 
 
 class TestCatalogEntrySerialization:
@@ -50,7 +50,8 @@ class TestCatalogEntrySerialization:
             "r": [[59000.0, 17.9, 0.01]],
         }
         entry = CatalogEntry(
-            ra=10.0, dec=20.0,
+            ra=10.0,
+            dec=20.0,
             source="ztf",
             properties={"ztf_lightcurve": lc_data, "ztf_n_epochs": 3},
         )

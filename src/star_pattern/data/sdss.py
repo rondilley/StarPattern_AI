@@ -2,14 +2,11 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-from typing import Any
-
 import numpy as np
 
-from star_pattern.core.fits_handler import FITSImage
-from star_pattern.core.sky_region import SkyRegion, EpochImage
 from star_pattern.core.catalog import CatalogEntry, StarCatalog
+from star_pattern.core.fits_handler import FITSImage
+from star_pattern.core.sky_region import EpochImage, SkyRegion
 from star_pattern.data.base import DataSource
 from star_pattern.data.cache import DataCache
 from star_pattern.utils.logging import get_logger
@@ -23,6 +20,13 @@ class SDSSDataSource(DataSource):
 
     BANDS = ["u", "g", "r", "i", "z"]
 
+    # SDSS imaging covers the north Galactic cap plus the equatorial
+    # stripes. Below about Dec = -15 there is no coverage at all, so a
+    # query there is guaranteed to come back empty after a full network
+    # round trip. The gate turns that wasted call into an immediate skip.
+    MIN_DEC = -15.0
+    MAX_DEC = 90.0
+
     def __init__(self, cache: DataCache | None = None):
         self._cache = cache or DataCache()
 
@@ -34,6 +38,26 @@ class SDSSDataSource(DataSource):
     def available_bands(self) -> list[str]:
         return self.BANDS
 
+    @property
+    def declination_range(self) -> tuple[float, float]:
+        """Declination limits of the survey footprint, in degrees."""
+        return (self.MIN_DEC, self.MAX_DEC)
+
+    @staticmethod
+    def _in_main_footprint(ra: float, dec: float) -> bool:
+        """Check whether a position can be inside SDSS imaging coverage.
+
+        This is a declination gate, not a full footprint mask: SDSS
+        coverage is patchy in RA as well, so a True result means "worth
+        querying", not "certainly observed". A False result is definite.
+
+        Args:
+            ra: Right ascension in degrees (accepted for interface
+                symmetry; the gate does not currently use it).
+            dec: Declination in degrees.
+        """
+        return SDSSDataSource.MIN_DEC <= dec <= SDSSDataSource.MAX_DEC
+
     @retry_with_backoff(max_retries=3, base_delay=2.0)
     def fetch_images(
         self,
@@ -41,9 +65,22 @@ class SDSSDataSource(DataSource):
         bands: list[str] | None = None,
     ) -> dict[str, FITSImage]:
         """Fetch SDSS images for a sky region."""
-        from astroquery.sdss import SDSS
-        from astropy.coordinates import SkyCoord
+        # Gate before any network work: south of the footprint SDSS has
+        # nothing to return, and the empty result would otherwise be
+        # indistinguishable from a genuine miss inside coverage.
+        if not self._in_main_footprint(region.ra, region.dec):
+            logger.info(
+                "Region (%.3f, %.3f) is south of the SDSS footprint "
+                "(dec limit %.1f); skipping image query",
+                region.ra,
+                region.dec,
+                self.MIN_DEC,
+            )
+            return {}
+
         import astropy.units as u
+        from astropy.coordinates import SkyCoord
+        from astroquery.sdss import SDSS
 
         bands = bands or ["r"]  # Default to r-band
         images: dict[str, FITSImage] = {}
@@ -54,7 +91,9 @@ class SDSSDataSource(DataSource):
             # Check cache
             cached = self._cache.get_path("sdss", region.ra, region.dec, region.radius, band)
             if cached:
-                logger.info(f"Loading cached SDSS {band}-band for ({region.ra:.3f}, {region.dec:.3f})")
+                logger.info(
+                    f"Loading cached SDSS {band}-band for ({region.ra:.3f}, {region.dec:.3f})"
+                )
                 images[band] = FITSImage.from_file(cached)
                 continue
 
@@ -92,9 +131,19 @@ class SDSSDataSource(DataSource):
         max_results: int = 10000,
     ) -> StarCatalog:
         """Fetch SDSS photometric catalog for a region."""
-        from astroquery.sdss import SDSS
-        from astropy.coordinates import SkyCoord
+        if not self._in_main_footprint(region.ra, region.dec):
+            logger.info(
+                "Region (%.3f, %.3f) is south of the SDSS footprint "
+                "(dec limit %.1f); skipping catalog query",
+                region.ra,
+                region.dec,
+                self.MIN_DEC,
+            )
+            return StarCatalog(source="sdss")
+
         import astropy.units as u
+        from astropy.coordinates import SkyCoord
+        from astroquery.sdss import SDSS
 
         # Check catalog cache
         cached_entries = self._cache.get_catalog("sdss", region.ra, region.dec, region.radius)
@@ -111,8 +160,15 @@ class SDSSDataSource(DataSource):
                 coord,
                 radius=region.radius * u.arcmin,
                 photoobj_fields=[
-                    "objid", "ra", "dec", "type",
-                    "psfMag_u", "psfMag_g", "psfMag_r", "psfMag_i", "psfMag_z",
+                    "objid",
+                    "ra",
+                    "dec",
+                    "type",
+                    "psfMag_u",
+                    "psfMag_g",
+                    "psfMag_r",
+                    "psfMag_i",
+                    "psfMag_z",
                 ],
             )
         except Exception as e:
@@ -152,7 +208,10 @@ class SDSSDataSource(DataSource):
 
         # Cache the catalog
         self._cache.put_catalog(
-            "sdss", region.ra, region.dec, region.radius,
+            "sdss",
+            region.ra,
+            region.dec,
+            region.radius,
             [e.to_dict() for e in entries],
         )
 
@@ -199,9 +258,9 @@ class SDSSDataSource(DataSource):
             return {}
 
         try:
-            from astroquery.sdss import SDSS
-            from astropy.coordinates import SkyCoord
             import astropy.units as u
+            from astropy.coordinates import SkyCoord
+            from astroquery.sdss import SDSS
         except ImportError:
             logger.warning("astroquery.sdss not available for Stripe 82 queries")
             return {}
@@ -210,8 +269,7 @@ class SDSSDataSource(DataSource):
         coord = SkyCoord(ra=region.ra * u.deg, dec=region.dec * u.deg, frame="icrs")
 
         logger.info(
-            f"Querying SDSS Stripe 82 epoch images for "
-            f"({region.ra:.3f}, {region.dec:.3f})"
+            f"Querying SDSS Stripe 82 epoch images for " f"({region.ra:.3f}, {region.dec:.3f})"
         )
 
         # Query for all photoobj entries to get unique (run, rerun, camcol, field)
@@ -264,34 +322,46 @@ class SDSSDataSource(DataSource):
 
                 # Check cache
                 cached = self._cache.get_path(
-                    "sdss_epoch", region.ra, region.dec, region.radius,
-                    band=band, epoch=epoch_key,
+                    "sdss_epoch",
+                    region.ra,
+                    region.dec,
+                    region.radius,
+                    band=band,
+                    epoch=epoch_key,
                 )
                 if cached is not None:
                     try:
                         fits_img = FITSImage.from_file(str(cached))
                         fits_img = self._extract_cutout(
-                            fits_img, region.ra, region.dec,
+                            fits_img,
+                            region.ra,
+                            region.dec,
                             cutout_arcmin,
                         )
                         # Read MJD from cached metadata or FITS header
                         mjd = self._extract_mjd_from_fits(fits_img)
                         if mjd is not None:
-                            epoch_images.append(EpochImage(
-                                image=fits_img,
-                                mjd=mjd,
-                                band=band,
-                                source="sdss",
-                                metadata={"run": run},
-                            ))
+                            epoch_images.append(
+                                EpochImage(
+                                    image=fits_img,
+                                    mjd=mjd,
+                                    band=band,
+                                    source="sdss",
+                                    metadata={"run": run},
+                                )
+                            )
                         continue
                     except Exception:
                         pass
 
                 try:
                     hdu_list = SDSS.get_images(
-                        run=run, rerun=rerun, camcol=camcol,
-                        field=field_id, band=band, timeout=120,
+                        run=run,
+                        rerun=rerun,
+                        camcol=camcol,
+                        field=field_id,
+                        band=band,
+                        timeout=120,
                     )
                 except Exception as e:
                     logger.debug(f"SDSS epoch image download failed for run {run}: {e}")
@@ -302,31 +372,44 @@ class SDSSDataSource(DataSource):
 
                 # Save to cache
                 cache_path = self._cache.cache_path_for(
-                    "sdss_epoch", region.ra, region.dec, region.radius,
-                    band=band, epoch=epoch_key,
+                    "sdss_epoch",
+                    region.ra,
+                    region.dec,
+                    region.radius,
+                    band=band,
+                    epoch=epoch_key,
                 )
                 try:
                     hdu_list[0].writeto(str(cache_path), overwrite=True)
                     self._cache.put(
-                        "sdss_epoch", region.ra, region.dec, region.radius,
-                        cache_path, band=band, epoch=epoch_key,
+                        "sdss_epoch",
+                        region.ra,
+                        region.dec,
+                        region.radius,
+                        cache_path,
+                        band=band,
+                        epoch=epoch_key,
                         metadata={"run": run},
                     )
 
                     fits_img = FITSImage.from_file(str(cache_path))
                     fits_img = self._extract_cutout(
-                        fits_img, region.ra, region.dec,
+                        fits_img,
+                        region.ra,
+                        region.dec,
                         cutout_arcmin,
                     )
                     mjd = self._extract_mjd_from_fits(fits_img)
                     if mjd is not None:
-                        epoch_images.append(EpochImage(
-                            image=fits_img,
-                            mjd=mjd,
-                            band=band,
-                            source="sdss",
-                            metadata={"run": run},
-                        ))
+                        epoch_images.append(
+                            EpochImage(
+                                image=fits_img,
+                                mjd=mjd,
+                                band=band,
+                                source="sdss",
+                                metadata={"run": run},
+                            )
+                        )
                 except Exception as e:
                     logger.debug(f"SDSS epoch image save/load failed: {e}")
                     continue
@@ -354,9 +437,7 @@ class SDSSDataSource(DataSource):
 
             # Subsample to max_epochs
             if len(epoch_images) > max_epochs:
-                indices = np.linspace(
-                    0, len(epoch_images) - 1, max_epochs, dtype=int
-                )
+                indices = np.linspace(0, len(epoch_images) - 1, max_epochs, dtype=int)
                 epoch_images = [epoch_images[i] for i in indices]
 
             if epoch_images:
@@ -375,7 +456,7 @@ class SDSSDataSource(DataSource):
 
         Tries TAI (seconds since MJD epoch), then MJD, then DATE-OBS headers.
         """
-        header = getattr(fits_img, 'header', None)
+        header = getattr(fits_img, "header", None)
         if header is None:
             return None
 
@@ -404,6 +485,7 @@ class SDSSDataSource(DataSource):
         if date_obs is not None:
             try:
                 from astropy.time import Time
+
                 t = Time(date_obs, format="isot", scale="utc")
                 return float(t.mjd)
             except Exception:
@@ -413,7 +495,10 @@ class SDSSDataSource(DataSource):
 
     @staticmethod
     def _extract_cutout(
-        fits_img: FITSImage, ra: float, dec: float, size_arcmin: float,
+        fits_img: FITSImage,
+        ra: float,
+        dec: float,
+        size_arcmin: float,
     ) -> FITSImage:
         """Extract a WCS-aware cutout from a full SDSS frame.
 
@@ -423,14 +508,18 @@ class SDSSDataSource(DataSource):
             return fits_img
 
         try:
+            import astropy.units as u
             from astropy.coordinates import SkyCoord
             from astropy.nddata import Cutout2D
-            import astropy.units as u
 
             center = SkyCoord(ra=ra * u.deg, dec=dec * u.deg, frame="icrs")
             size = size_arcmin * u.arcmin
             cutout = Cutout2D(
-                fits_img.data, center, size, wcs=fits_img.wcs, mode="partial",
+                fits_img.data,
+                center,
+                size,
+                wcs=fits_img.wcs,
+                mode="partial",
             )
             result = FITSImage.__new__(FITSImage)
             result.data = cutout.data.astype(np.float64)
@@ -444,7 +533,7 @@ class SDSSDataSource(DataSource):
 
     def is_available(self) -> bool:
         try:
-            from astroquery.sdss import SDSS
+            from astroquery.sdss import SDSS  # noqa: F401 - availability probe
 
             return True
         except ImportError:

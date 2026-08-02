@@ -22,11 +22,10 @@ from typing import Any
 
 import numpy as np
 
-from star_pattern.core.fits_handler import FITSImage
 from star_pattern.core.config import EvolutionConfig
+from star_pattern.core.fits_handler import FITSImage
 from star_pattern.detection.ensemble import EnsembleDetector
-from star_pattern.detection.anomaly import AnomalyDetector
-from star_pattern.evaluation.metrics import novelty_score, diversity_score
+from star_pattern.evaluation.metrics import diversity_score, novelty_score
 from star_pattern.utils.logging import get_logger
 
 logger = get_logger("discovery.fitness")
@@ -78,8 +77,12 @@ class FitnessEvaluator:
         """
         if not images:
             return {
-                "fitness": 0.0, "anomaly": 0, "significance": 0,
-                "novelty": 0, "diversity": 0, "recovery": 0,
+                "fitness": 0.0,
+                "anomaly": 0,
+                "significance": 0,
+                "novelty": 0,
+                "diversity": 0,
+                "recovery": 0,
             }
 
         from star_pattern.core.config import DetectionConfig
@@ -96,9 +99,7 @@ class FitnessEvaluator:
                 len(images), size=self.max_eval_images, replace=False
             )
             eval_images = [images[i] for i in indices]
-            logger.debug(
-                f"Subsampled {len(images)} images to {len(eval_images)} for evaluation"
-            )
+            logger.debug(f"Subsampled {len(images)} images to {len(eval_images)} for evaluation")
 
         # Compute config hash for cache lookups
         config_hash = self._config_hash(genome_config)
@@ -157,7 +158,11 @@ class FitnessEvaluator:
 
         # Component 3: Novelty (how different from previous genomes' findings)
         if features_arr.shape[0] > 0 and self._all_features:
-            ref = np.array(self._all_features[-20:]) if len(self._all_features) > 20 else np.array(self._all_features)
+            ref = (
+                np.array(self._all_features[-20:])
+                if len(self._all_features) > 20
+                else np.array(self._all_features)
+            )
             if ref.ndim == 1:
                 ref = ref.reshape(1, -1)
             mean_feat = np.mean(features_arr, axis=0)
@@ -220,20 +225,22 @@ class FitnessEvaluator:
         if rich is not None:
             return np.asarray(rich, dtype=np.float64)
 
-        return np.array([
-            result.get("anomaly_score", 0),
-            result.get("n_detections", 0),
-            result.get("classical", {}).get("gabor_score", 0),
-            result.get("morphology", {}).get("morphology_score", 0),
-            result.get("lens", {}).get("lens_score", 0),
-            result.get("distribution", {}).get("distribution_score", 0),
-            result.get("galaxy", {}).get("galaxy_score", 0),
-            result.get("kinematic", {}).get("kinematic_score", 0),
-            result.get("transient", {}).get("transient_score", 0),
-            result.get("sersic", {}).get("sersic_score", 0),
-            result.get("wavelet", {}).get("wavelet_score", 0),
-            result.get("population", {}).get("population_score", 0),
-        ])
+        return np.array(
+            [
+                result.get("anomaly_score", 0),
+                result.get("n_detections", 0),
+                result.get("classical", {}).get("gabor_score", 0),
+                result.get("morphology", {}).get("morphology_score", 0),
+                result.get("lens", {}).get("lens_score", 0),
+                result.get("distribution", {}).get("distribution_score", 0),
+                result.get("galaxy", {}).get("galaxy_score", 0),
+                result.get("kinematic", {}).get("kinematic_score", 0),
+                result.get("transient", {}).get("transient_score", 0),
+                result.get("sersic", {}).get("sersic_score", 0),
+                result.get("wavelet", {}).get("wavelet_score", 0),
+                result.get("population", {}).get("population_score", 0),
+            ]
+        )
 
     @staticmethod
     def _config_hash(genome_config: dict[str, Any]) -> str:
@@ -245,8 +252,7 @@ class FitnessEvaluator:
         """Clear the detection cache between generations."""
         if self._cache_hits > 0:
             logger.debug(
-                f"Detection cache: {self._cache_hits} hits, "
-                f"{self._cache_misses} misses"
+                f"Detection cache: {self._cache_hits} hits, " f"{self._cache_misses} misses"
             )
         self._detection_cache.clear()
         self._cache_hits = 0
@@ -275,9 +281,7 @@ class FitnessEvaluator:
             return 0.0
 
         # Select images for injection (use different ones each time for variety)
-        test_indices = self._injection_rng.choice(
-            len(images), size=n_tests, replace=False
-        )
+        test_indices = self._injection_rng.choice(len(images), size=n_tests, replace=False)
 
         recovered = 0
         total = 0

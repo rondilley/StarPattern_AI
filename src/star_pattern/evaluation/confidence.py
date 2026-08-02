@@ -1,13 +1,29 @@
 """Unified confidence scoring grounded in per-detector physical measurements.
 
 Replaces arbitrary hard caps with statistically defensible quality floors.
-Each detector's raw measurement maps to a p-value via the appropriate
-null-hypothesis distribution; p-values are the common currency across
-detectors. Region-wide multiple comparison correction uses BH-FDR.
+
+Detections fall into two distinct evidence families, and the two must never
+be mixed:
+
+EVIDENCE_TAIL
+    The detector supplies a physical measurement with a real null model
+    (Gaussian SNR, Poisson counts, binomial rates, chi2 residuals,
+    Lomb-Scargle FAP). These carry a genuine p_value and are the only
+    members of the region-wide BH-FDR family.
+
+EVIDENCE_HEURISTIC
+    The detector supplies a unitless 0-1 score with no null distribution
+    behind it (isolation-forest scores, Hough vote counts, ring
+    completeness, score fallbacks). These carry a heuristic_score and an
+    explicitly None p_value. Reporting `1 - score` in a p_value field
+    would manufacture a probability that was never measured, and feeding
+    it to FDR alongside real tail probabilities invalidates the
+    correction for every detection in the region.
 """
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -15,43 +31,98 @@ import numpy as np
 from scipy import stats
 
 from star_pattern.evaluation.statistical import (
-    bootstrap_confidence,
     multiple_comparison_correction,
 )
 from star_pattern.utils.logging import get_logger
 
 logger = get_logger("evaluation.confidence")
 
+# Evidence family tags. See the module docstring.
+EVIDENCE_TAIL = "tail_probability"
+EVIDENCE_HEURISTIC = "heuristic"
+
+# Legacy `method` tags that identify a pre-separation heuristic score.
+_LEGACY_HEURISTIC_METHODS = frozenset({"score_proxy", "empirical_rank"})
+
+
+def _finite_or_none(value: float | None) -> float | None:
+    """Return value, or None when it is not JSON-representable.
+
+    json.dumps writes inf and nan as the bare tokens Infinity and NaN,
+    which no strict JSON parser accepts. Report artifacts must stay
+    machine-readable.
+    """
+    if value is None:
+        return None
+    v = float(value)
+    return v if math.isfinite(v) else None
+
 
 @dataclass
 class ConfidenceScore:
     """Statistical confidence for an anomaly detection.
 
-    Carries the score, its statistical basis, and a human-readable
+    Carries the score, its evidence family, and a human-readable
     annotation explaining how it was computed.
     """
 
-    confidence: float  # [0, 1] -- 1 - p_corrected
-    p_value: float  # Raw p-value
-    p_corrected: float  # After multiple-comparison correction
+    confidence: float  # [0, 1] ranking currency
+    p_value: float | None  # Raw p-value; None for the heuristic family
+    p_corrected: float | None  # After correction; None for the heuristic family
     physical_quantity: str  # "SNR", "sigma", "FAP", etc.
     physical_value: float  # The raw measurement (SNR=7.2, sigma=4.1)
-    method: str  # "gaussian_sf", "fisher_combined", "empirical_rank"
+    method: str  # "gaussian_sf", "fisher_combined", "isolation_forest_score"
     annotation: str  # "Lens arc at SNR 7.2 (p=3.1e-13)"
+    evidence_basis: str = EVIDENCE_TAIL
+    heuristic_score: float | None = None  # Set only for the heuristic family
     n_independent_tests: int = 1
     correction_method: str = "none"  # "bonferroni", "fdr"
     n_agreeing_detectors: int = 0
     agreement_details: list[str] = field(default_factory=list)
 
+    @property
+    def is_tail(self) -> bool:
+        """True when this score rests on a real null distribution."""
+        return self.evidence_basis == EVIDENCE_TAIL
+
+    @classmethod
+    def heuristic(
+        cls,
+        score: float,
+        physical_quantity: str,
+        physical_value: float,
+        method: str,
+        annotation: str,
+    ) -> ConfidenceScore:
+        """Build a score for a detector with no null distribution.
+
+        The annotation must describe a score, never a probability.
+        """
+        bounded = float(min(max(score, 0.0), 1.0))
+        return cls(
+            confidence=bounded,
+            p_value=None,
+            p_corrected=None,
+            physical_quantity=physical_quantity,
+            physical_value=float(physical_value),
+            method=method,
+            annotation=annotation,
+            evidence_basis=EVIDENCE_HEURISTIC,
+            heuristic_score=bounded,
+            correction_method="none",
+        )
+
     def to_dict(self) -> dict[str, Any]:
         return {
-            "confidence": self.confidence,
-            "p_value": self.p_value,
-            "p_corrected": self.p_corrected,
+            "confidence": _finite_or_none(self.confidence),
+            "p_value": _finite_or_none(self.p_value),
+            "p_corrected": _finite_or_none(self.p_corrected),
             "physical_quantity": self.physical_quantity,
-            "physical_value": self.physical_value,
+            "physical_value": _finite_or_none(self.physical_value),
             "method": self.method,
             "annotation": self.annotation,
+            "evidence_basis": self.evidence_basis,
+            "heuristic_score": _finite_or_none(self.heuristic_score),
             "n_independent_tests": self.n_independent_tests,
             "correction_method": self.correction_method,
             "n_agreeing_detectors": self.n_agreeing_detectors,
@@ -60,14 +131,28 @@ class ConfidenceScore:
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> ConfidenceScore:
+        # Reports written before the family split carry no evidence_basis.
+        # Their heuristic entries are identifiable by their method tag.
+        basis = d.get("evidence_basis")
+        if basis is None:
+            basis = (
+                EVIDENCE_HEURISTIC
+                if d.get("method") in _LEGACY_HEURISTIC_METHODS
+                else EVIDENCE_TAIL
+            )
+        heuristic_score = d.get("heuristic_score")
+        if basis == EVIDENCE_HEURISTIC and heuristic_score is None:
+            heuristic_score = d.get("confidence")
         return cls(
             confidence=d["confidence"],
-            p_value=d["p_value"],
-            p_corrected=d["p_corrected"],
+            p_value=d.get("p_value"),
+            p_corrected=d.get("p_corrected"),
             physical_quantity=d["physical_quantity"],
             physical_value=d["physical_value"],
             method=d["method"],
             annotation=d["annotation"],
+            evidence_basis=basis,
+            heuristic_score=heuristic_score,
             n_independent_tests=d.get("n_independent_tests", 1),
             correction_method=d.get("correction_method", "none"),
             n_agreeing_detectors=d.get("n_agreeing_detectors", 0),
@@ -92,14 +177,56 @@ _QUALITY_FLOORS: dict[str, float] = {
     "anomaly": 0.05,  # Top 5th percentile
 }
 
+# Triage cutoffs for the heuristic family, on the detector's own 0-1
+# score scale.
+#
+# These are NOT significance thresholds and must never be described as
+# such. A heuristic score has no null distribution behind it, so no
+# threshold on it carries a false-positive rate. They exist to decide
+# which uncalibrated candidates are worth a look, and each value is set
+# to reproduce the effective selectivity the detector had before the
+# evidence families were split:
+#
+#   lens        old ring path was norm.sf(completeness * 5) <= 0.0013,
+#               i.e. completeness >= 0.6
+#   classical   old Hough path derived its own Poisson null from the
+#               vote count, so it admitted essentially every arc with a
+#               handful of votes; 0.5 keeps it a candidate-generation
+#               channel without pretending to significance
+#   others      old fallback was p = 1 - score <= floor, i.e.
+#               score >= 1 - floor
+#
+# Calibrating these against blank-sky fields would let the affected
+# detectors rejoin the tail family with real p-values. Until then the
+# reports must show them as scores.
+_HEURISTIC_SCORE_FLOORS: dict[str, float] = {
+    "lens": 0.6,
+    "classical": 0.5,
+    "galaxy": 0.9,
+    "morphology": 0.95,
+    "kinematic": 0.99,
+    "sersic": 0.99,
+    "population": 0.95,
+    "variability": 0.99,
+    "anomaly": 0.95,
+}
+_DEFAULT_HEURISTIC_SCORE_FLOOR = 0.95
+
 # System protection limits (OOM/bug guards)
 _MAX_PER_DETECTOR_SYSTEM = 500
 _MAX_PER_REGION_SYSTEM = 500
 
 # Detectors whose primary confidence path uses stats.norm.sf (batchable)
-_NORM_SF_DETECTORS = frozenset({
-    "lens", "distribution", "galaxy", "wavelet", "transient", "temporal",
-})
+_NORM_SF_DETECTORS = frozenset(
+    {
+        "lens",
+        "distribution",
+        "galaxy",
+        "wavelet",
+        "transient",
+        "temporal",
+    }
+)
 
 
 def _extract_norm_sf_input(a: Any) -> tuple[float, str] | None:
@@ -118,7 +245,9 @@ def _extract_norm_sf_input(a: Any) -> tuple[float, str] | None:
             completeness = props.get("completeness", 0)
             snr = props.get("snr", 0)
             if completeness > 0 and snr <= 0:
-                return (max(completeness * 5.0, 0), "lens_completeness")
+                # Ring completeness is a geometric fraction, not a sigma.
+                # Route to the individual heuristic path.
+                return None
         snr = props.get("snr", 0)
         if snr <= 0:
             snr = score
@@ -131,14 +260,17 @@ def _extract_norm_sf_input(a: Any) -> tuple[float, str] | None:
         return (max(sigma, 0), "distribution")
 
     if det == "galaxy":
+        # Only the explicit sigma/SNR keys are in real sigma units. The
+        # "asymmetry" and "strength" keys are 0-1 detector scores, and
+        # norm.sf() of a 0-1 score is not a tail probability.
         if atype == "merger":
-            sigma = props.get("asymmetry_sigma", props.get("asymmetry", score))
-            if sigma <= 0:
-                sigma = score
+            sigma = props.get("asymmetry_sigma")
+            if sigma is None or sigma <= 0:
+                return None
             return (max(sigma, 0), "galaxy_merger")
-        snr = props.get("tidal_snr", props.get("strength", score))
-        if snr <= 0:
-            snr = score
+        snr = props.get("tidal_snr")
+        if snr is None or snr <= 0:
+            return None
         return (max(snr, 0), "galaxy_tidal")
 
     if det == "wavelet":
@@ -166,7 +298,9 @@ def _extract_norm_sf_input(a: Any) -> tuple[float, str] | None:
 
 
 def _build_norm_sf_confidence(
-    a: Any, p_raw: float, value: float, mode: str,
+    a: Any,
+    p_raw: float,
+    mode: str,
 ) -> ConfidenceScore:
     """Build a ConfidenceScore from a batched norm.sf result.
 
@@ -176,21 +310,6 @@ def _build_norm_sf_confidence(
     props = a.properties
     score = a.score
     atype = a.anomaly_type
-
-    if mode == "lens_completeness":
-        completeness = props.get("completeness", 0)
-        return ConfidenceScore(
-            confidence=1 - p_raw,
-            p_value=p_raw,
-            p_corrected=p_raw,
-            physical_quantity="completeness",
-            physical_value=float(completeness),
-            method="gaussian_sf",
-            annotation=(
-                f"Lens ring completeness {completeness:.0%} "
-                f"(eff. {value:.1f} sigma, p={p_raw:.2e})"
-            ),
-        )
 
     if mode == "lens_snr":
         snr = props.get("snr", 0)
@@ -275,10 +394,10 @@ def _build_norm_sf_confidence(
             method="gaussian_sf",
             annotation=(
                 f"Wavelet {n_scales}-scale detection at SNR {peak_snr:.1f} "
-                f"(p_FDR={p_corrected:.2e})"
+                f"(p_Bonf={p_corrected:.2e})"
             ),
             n_independent_tests=n_tests,
-            correction_method="fdr",
+            correction_method="bonferroni",
         )
 
     if mode == "transient":
@@ -374,43 +493,47 @@ class ConfidenceEvaluator:
         if batch_items:
             values = np.array([v for _, v, _ in batch_items])
             p_values = stats.norm.sf(values)
-            for (idx, value, mode), p_raw in zip(batch_items, p_values):
+            for (idx, _value, mode), p_raw in zip(batch_items, p_values):
                 anomalies[idx].confidence = _build_norm_sf_confidence(
-                    anomalies[idx], float(p_raw), value, mode,
+                    anomalies[idx],
+                    float(p_raw),
+                    mode,
                 )
 
         # Individual calls for non-batchable detectors
         for idx in individual:
             a = anomalies[idx]
             a.confidence = self.compute_confidence(
-                a.anomaly_type, a.detector, a.properties, a.score,
+                a.anomaly_type,
+                a.detector,
+                a.properties,
+                a.score,
             )
 
     def _confidence_lens(
-        self, anomaly_type: str, props: dict[str, Any], score: float,
+        self,
+        anomaly_type: str,
+        props: dict[str, Any],
+        score: float,
     ) -> ConfidenceScore:
         """Lens: arc/ring SNR -> p = norm.sf(snr).
 
-        For rings, completeness is the primary metric (0-1). Convert
-        to an effective sigma: complete rings are highly significant.
+        Ring completeness is a geometric fraction with no null model, so
+        it reports as a heuristic score rather than a tail probability.
         """
         snr = props.get("snr", 0)
         completeness = props.get("completeness", 0)
         label = "arc" if "arc" in anomaly_type else "ring"
 
         if anomaly_type == "lens_ring" and completeness > 0 and snr <= 0:
-            # Completeness-based: map [0,1] to effective sigma
-            # 0.8 completeness ~ 4 sigma, 0.5 ~ 2.5 sigma
-            effective_sigma = completeness * 5.0
-            p = float(stats.norm.sf(max(effective_sigma, 0)))
-            return ConfidenceScore(
-                confidence=1 - p,
-                p_value=p,
-                p_corrected=p,
+            return ConfidenceScore.heuristic(
+                score=float(completeness),
                 physical_quantity="completeness",
                 physical_value=float(completeness),
-                method="gaussian_sf",
-                annotation=f"Lens ring completeness {completeness:.0%} (eff. {effective_sigma:.1f} sigma, p={p:.2e})",
+                method="ring_completeness",
+                annotation=(
+                    f"Lens ring completeness {completeness:.0%} " f"(heuristic, uncalibrated)"
+                ),
             )
 
         if snr <= 0:
@@ -427,7 +550,10 @@ class ConfidenceEvaluator:
         )
 
     def _confidence_distribution(
-        self, anomaly_type: str, props: dict[str, Any], score: float,
+        self,
+        anomaly_type: str,
+        props: dict[str, Any],
+        score: float,
     ) -> ConfidenceScore:
         """Distribution: overdensity sigma -> norm.sf(sigma) + Bonferroni for grid cells."""
         sigma = props.get("sigma", props.get("significance", score))
@@ -450,40 +576,66 @@ class ConfidenceEvaluator:
         )
 
     def _confidence_galaxy(
-        self, anomaly_type: str, props: dict[str, Any], score: float,
+        self,
+        anomaly_type: str,
+        props: dict[str, Any],
+        score: float,
     ) -> ConfidenceScore:
-        """Galaxy: tidal feature SNR or merger asymmetry sigma."""
+        """Galaxy: tidal feature SNR or merger asymmetry sigma.
+
+        Only asymmetry_sigma and tidal_snr are in sigma units. The
+        "asymmetry" and "strength" keys are 0-1 detector scores, so they
+        report as heuristics rather than passing through norm.sf.
+        """
         if anomaly_type == "merger":
-            sigma = props.get("asymmetry_sigma", props.get("asymmetry", score))
-            if sigma <= 0:
-                sigma = score
-            p = float(stats.norm.sf(max(sigma, 0)))
+            sigma = props.get("asymmetry_sigma")
+            if sigma is not None and sigma > 0:
+                p = float(stats.norm.sf(max(sigma, 0)))
+                return ConfidenceScore(
+                    confidence=1 - p,
+                    p_value=p,
+                    p_corrected=p,
+                    physical_quantity="sigma",
+                    physical_value=float(sigma),
+                    method="gaussian_sf",
+                    annotation=f"Merger asymmetry {sigma:.1f} sigma (p={p:.2e})",
+                )
+            asym = props.get("asymmetry", score)
+            return ConfidenceScore.heuristic(
+                score=float(score),
+                physical_quantity="asymmetry",
+                physical_value=float(asym),
+                method="score_proxy",
+                annotation=(f"Merger asymmetry {asym:.2f} (heuristic, uncalibrated)"),
+            )
+
+        # Tidal features
+        snr = props.get("tidal_snr")
+        if snr is not None and snr > 0:
+            p = float(stats.norm.sf(max(snr, 0)))
             return ConfidenceScore(
                 confidence=1 - p,
                 p_value=p,
                 p_corrected=p,
-                physical_quantity="sigma",
-                physical_value=float(sigma),
+                physical_quantity="SNR",
+                physical_value=float(snr),
                 method="gaussian_sf",
-                annotation=f"Merger asymmetry {sigma:.1f} sigma (p={p:.2e})",
+                annotation=f"Tidal feature at SNR {snr:.1f} (p={p:.2e})",
             )
-        # Tidal features
-        snr = props.get("tidal_snr", props.get("strength", score))
-        if snr <= 0:
-            snr = score
-        p = float(stats.norm.sf(max(snr, 0)))
-        return ConfidenceScore(
-            confidence=1 - p,
-            p_value=p,
-            p_corrected=p,
-            physical_quantity="SNR",
-            physical_value=float(snr),
-            method="gaussian_sf",
-            annotation=f"Tidal feature at SNR {snr:.1f} (p={p:.2e})",
+        strength = props.get("strength", score)
+        return ConfidenceScore.heuristic(
+            score=float(score),
+            physical_quantity="strength",
+            physical_value=float(strength),
+            method="score_proxy",
+            annotation=f"Tidal feature strength {strength:.2f} (heuristic, uncalibrated)",
         )
 
     def _confidence_morphology(
-        self, anomaly_type: str, props: dict[str, Any], score: float,
+        self,
+        anomaly_type: str,
+        props: dict[str, Any],
+        score: float,
     ) -> ConfidenceScore:
         """Morphology: CAS z-scores -> Fisher's combined p on individual p-values."""
         z_keys = ["C_zscore", "A_zscore", "S_zscore", "gini_zscore"]
@@ -497,16 +649,13 @@ class ConfidenceEvaluator:
                 details.append(f"{key.split('_')[0]}={z:.1f}sigma")
 
         if not p_values:
-            # Fallback: use morphology_score as proxy
-            p = max(1 - score, 1e-15)
-            return ConfidenceScore(
-                confidence=score,
-                p_value=p,
-                p_corrected=p,
+            # No CAS z-scores available: the raw score has no null model.
+            return ConfidenceScore.heuristic(
+                score=float(score),
                 physical_quantity="morphology_score",
                 physical_value=float(score),
                 method="score_proxy",
-                annotation=f"Morphology score {score:.2f}",
+                annotation=f"Morphology score {score:.2f} (heuristic, uncalibrated)",
             )
 
         # Fisher's method: -2 * sum(ln(p_i)) ~ chi2(2k)
@@ -526,18 +675,24 @@ class ConfidenceEvaluator:
         )
 
     def _confidence_wavelet(
-        self, anomaly_type: str, props: dict[str, Any], score: float,
+        self,
+        anomaly_type: str,
+        props: dict[str, Any],
+        score: float,
     ) -> ConfidenceScore:
         """Wavelet: per-scale SNR -> BH-FDR across scales."""
-        peak_snr = props.get("peak_snr", props.get("peak_significance", props.get("max_significance", score)))
+        peak_snr = props.get(
+            "peak_snr", props.get("peak_significance", props.get("max_significance", score))
+        )
         n_scales = props.get("n_scales", 1)
         if peak_snr <= 0:
             peak_snr = score
 
         p_raw = float(stats.norm.sf(max(peak_snr, 0)))
-        # BH-FDR across scales (typically 4-6 scales)
+        # Bonferroni across scales (typically 4-6 scales). This multiplies
+        # by the test count, which is Bonferroni and not BH-FDR.
         n_tests = max(n_scales, 4)
-        p_corrected = min(p_raw * n_tests / 1, 1.0)  # conservative FDR approx
+        p_corrected = min(p_raw * n_tests, 1.0)
 
         return ConfidenceScore(
             confidence=1 - p_corrected,
@@ -546,40 +701,89 @@ class ConfidenceEvaluator:
             physical_quantity="SNR",
             physical_value=float(peak_snr),
             method="gaussian_sf",
-            annotation=f"Wavelet {n_scales}-scale detection at SNR {peak_snr:.1f} (p_FDR={p_corrected:.2e})",
+            annotation=f"Wavelet {n_scales}-scale detection at SNR {peak_snr:.1f} (p_Bonf={p_corrected:.2e})",
             n_independent_tests=n_tests,
-            correction_method="fdr",
+            correction_method="bonferroni",
         )
 
     def _confidence_classical(
-        self, anomaly_type: str, props: dict[str, Any], score: float,
+        self,
+        anomaly_type: str,
+        props: dict[str, Any],
+        score: float,
     ) -> ConfidenceScore:
-        """Classical: max individual method significance (Hough/Gabor/FFT)."""
-        # Hough votes as a proxy for significance
+        """Classical: Hough vote count or Gabor filter energy.
+
+        Both signals are heuristics. The Hough "null rate" was derived
+        from the observation itself (expected = votes * 0.1), which makes
+        the resulting number a monotone transform of the vote count
+        rather than a probability under any data-independent null. Gabor
+        energy is a filter response, not a z-score. Neither may enter the
+        FDR family until the detector supplies a measured background rate.
+        """
         votes = props.get("hough_votes", props.get("votes", props.get("strength", 0)))
         gabor = props.get("gabor_energy", 0)
 
-        # Use the stronger signal
         if votes > gabor:
-            # Hough: approximate significance via Poisson
-            # Expected random votes ~ votes * 0.1 for noise
-            expected = max(votes * 0.1, 1.0)
-            p = float(1 - stats.poisson.cdf(max(int(votes) - 1, 0), expected))
             quantity = "Hough_votes"
             value = float(votes)
-            ann = f"Classical arc: {votes:.0f} Hough votes (p={p:.2e})"
-        else:
-            # Gabor energy: treat as SNR-like
-            p = float(stats.norm.sf(max(gabor, 0)))
+            ann = f"Classical arc: {votes:.0f} Hough votes (heuristic, uncalibrated)"
+            method = "hough_vote_count"
+        elif gabor > 0:
             quantity = "gabor_energy"
             value = float(gabor)
-            ann = f"Classical Gabor energy {gabor:.2f} (p={p:.2e})"
-
-        if p >= 1.0:
-            p = max(1 - score, 1e-15)
+            ann = f"Classical Gabor energy {gabor:.2f} (heuristic, uncalibrated)"
+            method = "gabor_energy"
+        else:
             quantity = "score"
             value = float(score)
-            ann = f"Classical score {score:.2f}"
+            ann = f"Classical score {score:.2f} (heuristic, uncalibrated)"
+            method = "score_proxy"
+
+        return ConfidenceScore.heuristic(
+            score=float(score),
+            physical_quantity=quantity,
+            physical_value=value,
+            method=method,
+            annotation=ann,
+        )
+
+    def _confidence_kinematic(
+        self,
+        anomaly_type: str,
+        props: dict[str, Any],
+        score: float,
+    ) -> ConfidenceScore:
+        """ProperMotion: group membership count vs expected field rate."""
+        n_members = props.get("n_members", 0)
+        expected_field = props.get("expected_field", 1.0)
+
+        if n_members > 0 and expected_field > 0:
+            # sf() rather than 1 - cdf(): the latter underflows to exactly
+            # 0.0 for rich groups and reports false certainty.
+            p = float(stats.poisson.sf(max(int(n_members) - 1, 0), expected_field))
+            ann = (
+                f"{anomaly_type.replace('_', ' ').capitalize()}: "
+                f"{n_members} members vs {expected_field:.1f} expected (p={p:.2e})"
+            )
+            quantity = "n_members"
+            value = float(n_members)
+            method = "poisson_sf"
+        elif n_members > 0 and "deviation_sigma" in props:
+            sigma = props["deviation_sigma"]
+            p = float(2 * stats.norm.sf(abs(max(sigma, 0))))
+            ann = f"{anomaly_type.replace('_', ' ').capitalize()} at {sigma:.1f} sigma (p={p:.2e})"
+            quantity = "sigma"
+            value = float(sigma)
+            method = "gaussian_sf_twotailed"
+        else:
+            return ConfidenceScore.heuristic(
+                score=float(score),
+                physical_quantity="score",
+                physical_value=float(score),
+                method="score_proxy",
+                annotation=f"Kinematic score {score:.2f} (heuristic, uncalibrated)",
+            )
 
         return ConfidenceScore(
             confidence=1 - p,
@@ -587,44 +791,15 @@ class ConfidenceEvaluator:
             p_corrected=p,
             physical_quantity=quantity,
             physical_value=value,
-            method="poisson_cdf" if "Hough" in quantity else "gaussian_sf",
-            annotation=ann,
-        )
-
-    def _confidence_kinematic(
-        self, anomaly_type: str, props: dict[str, Any], score: float,
-    ) -> ConfidenceScore:
-        """ProperMotion: group membership count vs expected field rate."""
-        n_members = props.get("n_members", 0)
-        expected_field = props.get("expected_field", 1.0)
-
-        if n_members > 0 and expected_field > 0:
-            p = float(1 - stats.poisson.cdf(max(int(n_members) - 1, 0), expected_field))
-            ann = (
-                f"{anomaly_type.replace('_', ' ').capitalize()}: "
-                f"{n_members} members vs {expected_field:.1f} expected (p={p:.2e})"
-            )
-        elif n_members > 0:
-            # No expected_field available: use deviation_sigma if present
-            sigma = props.get("deviation_sigma", score)
-            p = float(2 * stats.norm.sf(abs(max(sigma, 0))))
-            ann = f"{anomaly_type.replace('_', ' ').capitalize()} at {sigma:.1f} sigma (p={p:.2e})"
-        else:
-            p = max(1 - score, 1e-15)
-            ann = f"Kinematic score {score:.2f}"
-
-        return ConfidenceScore(
-            confidence=1 - p,
-            p_value=p,
-            p_corrected=p,
-            physical_quantity="n_members" if n_members > 0 else "sigma",
-            physical_value=float(n_members if n_members > 0 else score),
-            method="poisson_cdf" if n_members > 0 and expected_field > 0 else "gaussian_sf",
+            method=method,
             annotation=ann,
         )
 
     def _confidence_transient(
-        self, anomaly_type: str, props: dict[str, Any], score: float,
+        self,
+        anomaly_type: str,
+        props: dict[str, Any],
+        score: float,
     ) -> ConfidenceScore:
         """Transient: deviation sigma -> 2 * norm.sf(|sigma|) two-tailed."""
         sigma = props.get("deviation_sigma", props.get("deviation", score))
@@ -642,7 +817,10 @@ class ConfidenceEvaluator:
         )
 
     def _confidence_sersic(
-        self, anomaly_type: str, props: dict[str, Any], score: float,
+        self,
+        anomaly_type: str,
+        props: dict[str, Any],
+        score: float,
     ) -> ConfidenceScore:
         """Sersic: residual peak SNR or chi2 of fit."""
         snr = props.get("residual_snr", props.get("peak_snr", 0))
@@ -675,10 +853,15 @@ class ConfidenceEvaluator:
             ann = f"Sersic fit chi2_red={chi2_red:.2f} (p={p:.2e})"
 
         if p >= 1.0:
-            p = max(1 - score, 1e-15) if score > 0 else 1.0
-            quantity = "score"
-            value = float(score)
-            ann = f"Sersic score {score:.2f}"
+            # Neither the residual SNR nor the chi2 fit gave a usable
+            # tail probability, so the raw score has no null model.
+            return ConfidenceScore.heuristic(
+                score=float(score),
+                physical_quantity="score",
+                physical_value=float(score),
+                method="score_proxy",
+                annotation=f"Sersic score {score:.2f} (heuristic, uncalibrated)",
+            )
 
         return ConfidenceScore(
             confidence=1 - p,
@@ -691,7 +874,10 @@ class ConfidenceEvaluator:
         )
 
     def _confidence_population(
-        self, anomaly_type: str, props: dict[str, Any], score: float,
+        self,
+        anomaly_type: str,
+        props: dict[str, Any],
+        score: float,
     ) -> ConfidenceScore:
         """StellarPopulation: binomial test on observed vs field rate."""
         n_sources = props.get("n_sources_with_color", 0)
@@ -707,8 +893,13 @@ class ConfidenceEvaluator:
                     f"({n_rg}/{n_sources} vs {field_rate:.2f} expected, p={p:.2e})"
                 )
             else:
-                p = max(1 - score, 1e-15) if score > 0 else 1.0
-                ann = f"Population score {score:.3f}"
+                return ConfidenceScore.heuristic(
+                    score=float(score),
+                    physical_quantity="rgb_fraction",
+                    physical_value=float(rgb_fraction),
+                    method="score_proxy",
+                    annotation=(f"Population score {score:.3f} (heuristic, uncalibrated)"),
+                )
             return ConfidenceScore(
                 confidence=1 - p,
                 p_value=p,
@@ -733,8 +924,13 @@ class ConfidenceEvaluator:
                 f"({n_bs}/{n_sources} vs {field_rate:.2f} expected, p={p:.2e})"
             )
         else:
-            p = max(1 - score, 1e-15) if score > 0 else 1.0
-            ann = f"Population score {score:.3f}"
+            return ConfidenceScore.heuristic(
+                score=float(score),
+                physical_quantity="bs_fraction",
+                physical_value=float(bs_fraction),
+                method="score_proxy",
+                annotation=f"Population score {score:.3f} (heuristic, uncalibrated)",
+            )
 
         return ConfidenceScore(
             confidence=1 - p,
@@ -747,7 +943,10 @@ class ConfidenceEvaluator:
         )
 
     def _confidence_variability(
-        self, anomaly_type: str, props: dict[str, Any], score: float,
+        self,
+        anomaly_type: str,
+        props: dict[str, Any],
+        score: float,
     ) -> ConfidenceScore:
         """Variability: FAP for periodic, chi2 for general variability."""
         fap = props.get("fap", None)
@@ -769,11 +968,13 @@ class ConfidenceEvaluator:
             value = float(chi2)
             method = "chi2_sf"
         else:
-            p = max(1 - score, 1e-15) if score > 0 else 1.0
-            ann = f"Variability score {score:.2f}"
-            quantity = "score"
-            value = float(score)
-            method = "score_proxy"
+            return ConfidenceScore.heuristic(
+                score=float(score),
+                physical_quantity="score",
+                physical_value=float(score),
+                method="score_proxy",
+                annotation=f"Variability score {score:.2f} (heuristic, uncalibrated)",
+            )
 
         return ConfidenceScore(
             confidence=1 - p,
@@ -786,7 +987,10 @@ class ConfidenceEvaluator:
         )
 
     def _confidence_temporal(
-        self, anomaly_type: str, props: dict[str, Any], score: float,
+        self,
+        anomaly_type: str,
+        props: dict[str, Any],
+        score: float,
     ) -> ConfidenceScore:
         """Temporal: epoch-diff peak SNR -> norm.sf(snr)."""
         snr = props.get("peak_snr", score)
@@ -805,20 +1009,26 @@ class ConfidenceEvaluator:
         )
 
     def _confidence_anomaly(
-        self, anomaly_type: str, props: dict[str, Any], score: float,
+        self,
+        anomaly_type: str,
+        props: dict[str, Any],
+        score: float,
     ) -> ConfidenceScore:
-        """Anomaly (Isolation Forest): empirical rank percentile."""
-        # IF score is already a normalized [0, 1] anomaly score
-        # Treat as empirical p-value: top 5% of population
-        p = max(1 - score, 1e-15)
-        return ConfidenceScore(
-            confidence=score,
-            p_value=p,
-            p_corrected=p,
+        """Anomaly (Isolation Forest): normalized outlier score.
+
+        The score is min-max normalized within the current batch, not
+        ranked against a calibrated null population, so 1 - score is not
+        an empirical p-value and must not enter the FDR family.
+        """
+        return ConfidenceScore.heuristic(
+            score=float(score),
             physical_quantity="IF_score",
             physical_value=float(score),
-            method="empirical_rank",
-            annotation=f"Isolation forest score {score:.3f} (rank p={p:.2e})",
+            method="isolation_forest_score",
+            annotation=(
+                f"Isolation forest score {score:.3f} "
+                f"(heuristic, batch-normalized, uncalibrated)"
+            ),
         )
 
     def _confidence_fallback(
@@ -828,16 +1038,15 @@ class ConfidenceEvaluator:
         props: dict[str, Any],
         score: float,
     ) -> ConfidenceScore:
-        """Fallback for unknown detectors: use score as proxy."""
-        p = max(1 - score, 1e-15) if score > 0 else 1.0
-        return ConfidenceScore(
-            confidence=float(min(score, 1.0)),
-            p_value=p,
-            p_corrected=p,
+        """Fallback for unknown detectors: report the raw score honestly."""
+        return ConfidenceScore.heuristic(
+            score=float(score),
             physical_quantity="score",
             physical_value=float(score),
             method="score_proxy",
-            annotation=f"{detector}/{anomaly_type} score {score:.3f}",
+            annotation=(
+                f"{detector}/{anomaly_type} score {score:.3f} " f"(heuristic, uncalibrated)"
+            ),
         )
 
 
@@ -847,24 +1056,40 @@ def passes_quality_floor(
 ) -> bool:
     """Check if an anomaly passes its detector's quality floor.
 
-    Returns True if the raw p-value is below the detector's threshold.
+    Tail-family detections pass when the raw p-value is at or below the
+    detector's significance threshold. Heuristic detections have no
+    p-value, so they are triaged against _HEURISTIC_SCORE_FLOORS instead.
+    Reusing a p-value floor as a score cutoff would be a category error:
+    the lens floor of 0.0013 encodes "3 sigma", not "score >= 0.9987".
     """
-    floor = _QUALITY_FLOORS.get(detector, 0.05)
-    return confidence.p_value <= floor
+    if confidence.evidence_basis == EVIDENCE_HEURISTIC:
+        floor = _HEURISTIC_SCORE_FLOORS.get(detector, _DEFAULT_HEURISTIC_SCORE_FLOOR)
+        return (confidence.heuristic_score or 0.0) >= floor
+    return confidence.p_value is not None and confidence.p_value <= _QUALITY_FLOORS.get(
+        detector, 0.05
+    )
 
 
 def apply_fdr_correction(
     anomalies: list[Any],
 ) -> None:
-    """Apply BH-FDR correction across all anomalies in a region.
+    """Apply BH-FDR correction across the tail-probability family.
 
-    Updates each anomaly's confidence.p_corrected and confidence.confidence
+    Updates each member's confidence.p_corrected and confidence.confidence
     in-place. Anomalies without confidence scores are skipped.
+
+    Heuristic detections are never members. A detector score is not a
+    p-value, and including one would both corrupt the ranks of the real
+    p-values and give the heuristic a corrected p-value it never earned.
     """
-    # Collect p-values from anomalies that have confidence
+    # Collect p-values from tail-family anomalies only.
     indexed: list[tuple[int, float]] = []
     for i, a in enumerate(anomalies):
-        if a.confidence is not None:
+        if (
+            a.confidence is not None
+            and a.confidence.evidence_basis == EVIDENCE_TAIL
+            and a.confidence.p_value is not None
+        ):
             indexed.append((i, a.confidence.p_value))
 
     if not indexed:
@@ -911,18 +1136,10 @@ def assign_spatial_groups(
             parent[ra] = rb
 
     # Build coordinate arrays for vectorized pairwise distance
-    sky_ra = np.array([
-        a.sky_ra if a.sky_ra is not None else np.nan for a in anomalies
-    ])
-    sky_dec = np.array([
-        a.sky_dec if a.sky_dec is not None else np.nan for a in anomalies
-    ])
-    px_x = np.array([
-        a.pixel_x if a.pixel_x is not None else np.nan for a in anomalies
-    ])
-    px_y = np.array([
-        a.pixel_y if a.pixel_y is not None else np.nan for a in anomalies
-    ])
+    sky_ra = np.array([a.sky_ra if a.sky_ra is not None else np.nan for a in anomalies])
+    sky_dec = np.array([a.sky_dec if a.sky_dec is not None else np.nan for a in anomalies])
+    px_x = np.array([a.pixel_x if a.pixel_x is not None else np.nan for a in anomalies])
+    px_y = np.array([a.pixel_y if a.pixel_y is not None else np.nan for a in anomalies])
 
     # Sky-coord pairs: vectorized pairwise separation
     has_sky = ~(np.isnan(sky_ra) | np.isnan(sky_dec))
@@ -989,18 +1206,22 @@ def compute_group_summary_from_members(
     p_values = []
     detail_lines = []
     detectors_seen = set()
+    n_heuristic = 0
 
     for a in members:
         detectors_seen.add(a.detector)
-        if a.confidence is not None:
+        if a.confidence is None:
+            detail_lines.append(f"  - {a.detector}: {a.anomaly_type} (no confidence)")
+            continue
+        if a.confidence.evidence_basis == EVIDENCE_TAIL and a.confidence.p_value is not None:
+            # Fisher's method combines p-values. Only real tail
+            # probabilities qualify; a heuristic score would inflate the
+            # combined significance with a number that measures nothing.
             p_values.append(a.confidence.p_value)
-            detail_lines.append(
-                f"  - {a.detector}: {a.confidence.annotation}"
-            )
+            detail_lines.append(f"  - {a.detector}: {a.confidence.annotation}")
         else:
-            detail_lines.append(
-                f"  - {a.detector}: {a.anomaly_type} (no confidence)"
-            )
+            n_heuristic += 1
+            detail_lines.append(f"  - {a.detector}: {a.confidence.annotation} [not combined]")
 
     # Fisher's combined test
     if p_values:
@@ -1013,13 +1234,17 @@ def compute_group_summary_from_members(
 
     header = (
         f"Group {group_id} -- {len(detectors_seen)} detectors, "
-        f"Fisher combined p={p_combined:.2e}:"
+        f"Fisher combined p={p_combined:.2e} over {len(p_values)} p-values:"
     )
+    if n_heuristic:
+        header += f" ({n_heuristic} heuristic member(s) not combined)"
 
     return {
         "group_id": group_id,
         "n_detectors": len(detectors_seen),
         "n_members": len(members),
+        "n_combined_members": len(p_values),
+        "n_heuristic_members": n_heuristic,
         "p_combined": p_combined,
         "confidence": 1 - p_combined,
         "summary_text": "\n".join([header] + detail_lines),

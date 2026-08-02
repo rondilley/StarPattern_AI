@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
@@ -52,9 +52,7 @@ def signal_to_noise(signal: np.ndarray, background_rms: float) -> float:
     return float(np.max(signal) / background_rms)
 
 
-def detection_significance(
-    observed: float, expected: float, n_trials: int = 1
-) -> dict[str, float]:
+def detection_significance(observed: float, expected: float, n_trials: int = 1) -> dict[str, float]:
     """Compute detection significance (sigma) and p-value.
 
     Args:
@@ -67,12 +65,16 @@ def detection_significance(
     if expected <= 0:
         return {"sigma": 0.0, "p_value": 1.0, "corrected_p_value": 1.0}
 
-    # Poisson significance
-    p_value = 1 - stats.poisson.cdf(int(observed) - 1, expected)
+    # Poisson significance. Use sf() rather than 1 - cdf(): the latter
+    # loses all precision once the true tail drops below ~1e-16 and
+    # underflows to exactly 0.0 around 8 sigma.
+    p_value = float(stats.poisson.sf(int(observed) - 1, expected))
     corrected_p = min(p_value * n_trials, 1.0)  # Bonferroni
 
-    # Convert to sigma
-    sigma = float(stats.norm.isf(min(p_value, 0.5)))
+    # Convert to sigma. sf() still underflows to 0.0 for extreme inputs,
+    # and norm.isf(0.0) is +inf, which json.dumps writes as the invalid
+    # JSON token Infinity. Clamp so sigma stays finite (caps near 37).
+    sigma = float(stats.norm.isf(min(max(p_value, 1e-300), 0.5)))
 
     return {
         "sigma": max(sigma, 0),
@@ -101,9 +103,7 @@ def anomaly_score_combined(
     if total_weight == 0:
         return 0.0
 
-    score = sum(
-        detection_scores[k] * weights.get(k, 0) for k in detection_scores
-    ) / total_weight
+    score = sum(detection_scores[k] * weights.get(k, 0) for k in detection_scores) / total_weight
 
     return float(np.clip(score, 0, 1))
 
@@ -211,8 +211,7 @@ class PatternResult:
             "debate_verdict": self.debate_verdict,
             "consensus_score": self.consensus_score,
             "region_confidence": (
-                self.region_confidence.to_dict()
-                if self.region_confidence else None
+                self.region_confidence.to_dict() if self.region_confidence else None
             ),
             "metadata": self.metadata,
             "details": self.details,

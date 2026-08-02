@@ -16,6 +16,9 @@ build/
 venv/
 env/
 
+# Local-only Claude Code settings (shared settings.json IS tracked)
+.claude/settings.local.json
+
 # IDE
 .vscode/
 .idea/

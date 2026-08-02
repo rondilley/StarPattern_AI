@@ -31,7 +31,9 @@ class SimpleUNet(nn.Module):
     Adapted for single-channel FITS input.
     """
 
-    def __init__(self, in_channels: int = 1, out_channels: int = 1, features: list[int] | None = None):
+    def __init__(
+        self, in_channels: int = 1, out_channels: int = 1, features: list[int] | None = None
+    ):
         super().__init__()
         features = features or [32, 64, 128, 256]
 

@@ -14,6 +14,41 @@ logger = get_logger("retry")
 
 F = TypeVar("F", bound=Callable[..., Any])
 
+# HTTP statuses that will never succeed on retry: the request itself is
+# wrong, or the caller is not permitted. Retrying these burns the full
+# backoff schedule (roughly 14 seconds at the default settings) for a
+# guaranteed failure, and hides the real cause behind a timeout-shaped
+# delay. 408 and 429 are absent on purpose; both are worth retrying.
+_PERMANENT_HTTP_STATUSES = frozenset({400, 401, 403, 404, 405, 409, 410, 422})
+
+# Class names of the same failures, for clients that do not expose a
+# status code. Matched by name so that optional vendor packages do not
+# have to be importable here.
+_PERMANENT_EXCEPTION_NAMES = frozenset(
+    {
+        "AuthenticationError",
+        "BadRequestError",
+        "InvalidArgument",
+        "NotFoundError",
+        "NotFound",
+        "PermissionDenied",
+        "PermissionDeniedError",
+        "UnprocessableEntityError",
+    }
+)
+
+
+def is_permanent_failure(exc: BaseException) -> bool:
+    """True when retrying the call cannot change the outcome."""
+    status = getattr(exc, "status_code", None)
+    if isinstance(status, int) and status in _PERMANENT_HTTP_STATUSES:
+        return True
+    response = getattr(exc, "response", None)
+    status = getattr(response, "status_code", None)
+    if isinstance(status, int) and status in _PERMANENT_HTTP_STATUSES:
+        return True
+    return type(exc).__name__ in _PERMANENT_EXCEPTION_NAMES
+
 
 def retry_with_backoff(
     max_retries: int = 3,
@@ -43,6 +78,9 @@ def retry_with_backoff(
                     return func(*args, **kwargs)
                 except retryable_exceptions as e:
                     last_exception = e
+                    if is_permanent_failure(e):
+                        logger.error(f"{func.__name__} failed permanently: {e}. " f"Not retrying.")
+                        raise
                     if attempt == max_retries:
                         break
                     delay = min(base_delay * (exponential_base**attempt), max_delay)
@@ -63,6 +101,9 @@ def retry_with_backoff(
                     return await func(*args, **kwargs)
                 except retryable_exceptions as e:
                     last_exception = e
+                    if is_permanent_failure(e):
+                        logger.error(f"{func.__name__} failed permanently: {e}. " f"Not retrying.")
+                        raise
                     if attempt == max_retries:
                         break
                     delay = min(base_delay * (exponential_base**attempt), max_delay)

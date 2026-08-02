@@ -28,8 +28,10 @@ AUTH_TIMESTAMP_TOLERANCE = 300.0  # seconds
 
 # --- Framing ---
 
+
 async def send_message(
-    writer: asyncio.StreamWriter, msg: dict[str, Any],
+    writer: asyncio.StreamWriter,
+    msg: dict[str, Any],
 ) -> None:
     """Send a length-prefixed gzip-compressed JSON message."""
     payload = gzip.compress(json.dumps(msg, default=str).encode("utf-8"))
@@ -48,13 +50,12 @@ async def recv_message(
         asyncio.TimeoutError: If timeout expires.
         ConnectionError: If the connection is closed or message is invalid.
     """
+
     async def _recv() -> dict[str, Any]:
         header = await reader.readexactly(4)
         (length,) = struct.unpack(">I", header)
         if length > MAX_MESSAGE_SIZE:
-            raise ConnectionError(
-                f"Message size {length} exceeds limit {MAX_MESSAGE_SIZE}"
-            )
+            raise ConnectionError(f"Message size {length} exceeds limit {MAX_MESSAGE_SIZE}")
         payload = await reader.readexactly(length)
         data = gzip.decompress(payload)
         return json.loads(data)
@@ -65,6 +66,7 @@ async def recv_message(
 
 
 # --- Authentication ---
+
 
 def make_auth(token: str, timestamp: float) -> str:
     """Create HMAC-SHA256 digest for authentication."""
@@ -85,6 +87,7 @@ def verify_auth(token: str, timestamp: float, digest: str) -> bool:
 
 
 # --- Data classes ---
+
 
 @dataclass
 class WorkUnit:

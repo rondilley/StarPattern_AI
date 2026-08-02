@@ -30,18 +30,20 @@ logger = get_logger("detection.stellar_population")
 # Empirical main sequence locus in Gaia (BP-RP, M_G) space
 # Derived from Gaia DR3 solar neighborhood CMD
 # (BP-RP color, approximate absolute magnitude M_G)
-MS_LOCUS_GAIA = np.array([
-    (-0.2, -1.0),
-    (0.3, 1.0),
-    (0.6, 3.0),
-    (0.9, 4.5),
-    (1.2, 6.0),
-    (1.5, 7.5),
-    (2.0, 9.0),
-    (2.5, 11.0),
-    (3.0, 13.0),
-    (3.5, 15.0),
-])
+MS_LOCUS_GAIA = np.array(
+    [
+        (-0.2, -1.0),
+        (0.3, 1.0),
+        (0.6, 3.0),
+        (0.9, 4.5),
+        (1.2, 6.0),
+        (1.5, 7.5),
+        (2.0, 9.0),
+        (2.5, 11.0),
+        (3.0, 13.0),
+        (3.5, 15.0),
+    ]
+)
 
 
 class StellarPopulationAnalyzer:
@@ -131,7 +133,8 @@ class StellarPopulationAnalyzer:
         return results
 
     def _extract_cmd_data(
-        self, catalog: StarCatalog,
+        self,
+        catalog: StarCatalog,
     ) -> tuple[np.ndarray, np.ndarray, list[str]]:
         """Extract color and magnitude arrays from catalog.
 
@@ -177,7 +180,9 @@ class StellarPopulationAnalyzer:
         return np.array(colors), np.array(mags), source_ids
 
     def _cmd_density(
-        self, colors: np.ndarray, mags: np.ndarray,
+        self,
+        colors: np.ndarray,
+        mags: np.ndarray,
     ) -> dict[str, Any]:
         """Compute 2D density map of the CMD using kernel density estimation."""
         n = self.density_grid_size
@@ -186,7 +191,10 @@ class StellarPopulationAnalyzer:
 
         # 2D histogram
         hist, c_edges, m_edges = np.histogram2d(
-            colors, mags, bins=n, range=[c_range, m_range],
+            colors,
+            mags,
+            bins=n,
+            range=[c_range, m_range],
         )
 
         # Smooth for density estimation
@@ -199,11 +207,13 @@ class StellarPopulationAnalyzer:
 
         cmd_peaks = []
         for py, px in peak_coords:
-            cmd_peaks.append({
-                "color": float((c_edges[py] + c_edges[py + 1]) / 2),
-                "mag": float((m_edges[px] + m_edges[px + 1]) / 2),
-                "density": float(density[py, px]),
-            })
+            cmd_peaks.append(
+                {
+                    "color": float((c_edges[py] + c_edges[py + 1]) / 2),
+                    "mag": float((m_edges[px] + m_edges[px + 1]) / 2),
+                    "density": float(density[py, px]),
+                }
+            )
 
         return {
             "n_peaks": len(cmd_peaks),
@@ -212,7 +222,9 @@ class StellarPopulationAnalyzer:
         }
 
     def _identify_main_sequence(
-        self, colors: np.ndarray, mags: np.ndarray,
+        self,
+        colors: np.ndarray,
+        mags: np.ndarray,
     ) -> dict[str, Any]:
         """Identify the main sequence in the CMD.
 
@@ -272,9 +284,9 @@ class StellarPopulationAnalyzer:
             "ms_fraction": float(ms_mask.sum() / len(mags)),
             "turnoff_mag": ms_turnoff_mag,
             "turnoff_color": ms_turnoff_color,
-            "ms_width_measured": float(np.std(color_offset[ms_mask]))
-            if ms_mask.sum() > 3
-            else self.ms_width,
+            "ms_width_measured": (
+                float(np.std(color_offset[ms_mask])) if ms_mask.sum() > 3 else self.ms_width
+            ),
             "ms_mask": ms_mask,
             "ms_color_at_mag": ms_color_at_mag,
         }
@@ -294,9 +306,7 @@ class StellarPopulationAnalyzer:
 
         # RGB: brighter than turnoff AND redder than turnoff + offset
         rgb_mask = (
-            (mags < turnoff_mag + 0.5)
-            & (colors > turnoff_color + 0.3)
-            & ~ms_result["ms_mask"]
+            (mags < turnoff_mag + 0.5) & (colors > turnoff_color + 0.3) & ~ms_result["ms_mask"]
         )
 
         rgb_colors = colors[rgb_mask]
@@ -327,10 +337,7 @@ class StellarPopulationAnalyzer:
         turnoff_mag = ms_result["turnoff_mag"]
 
         # Blue stragglers: brighter than turnoff AND bluer than turnoff - offset
-        bs_mask = (
-            (mags < turnoff_mag)
-            & (colors < turnoff_color - self.blue_straggler_offset)
-        )
+        bs_mask = (mags < turnoff_mag) & (colors < turnoff_color - self.blue_straggler_offset)
 
         return {
             "n_blue_stragglers": int(bs_mask.sum()),
@@ -397,7 +404,8 @@ class StellarPopulationAnalyzer:
         }
 
     def _analyze_color_distribution(
-        self, colors: np.ndarray,
+        self,
+        colors: np.ndarray,
     ) -> dict[str, Any]:
         """Analyze the overall color distribution for anomalies."""
         median_color = float(np.median(colors))
@@ -405,17 +413,13 @@ class StellarPopulationAnalyzer:
 
         # Skewness: asymmetry in color distribution
         if std_color > 1e-6:
-            skewness = float(
-                np.mean(((colors - median_color) / std_color) ** 3)
-            )
+            skewness = float(np.mean(((colors - median_color) / std_color) ** 3))
         else:
             skewness = 0.0
 
         # Kurtosis: peakedness
         if std_color > 1e-6:
-            kurtosis = float(
-                np.mean(((colors - median_color) / std_color) ** 4) - 3
-            )
+            kurtosis = float(np.mean(((colors - median_color) / std_color) ** 4) - 3)
         else:
             kurtosis = 0.0
 

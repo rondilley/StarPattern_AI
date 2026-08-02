@@ -1,15 +1,14 @@
 """Tests for compositional detection operations and pipelines."""
 
 import numpy as np
-import pytest
 
 from star_pattern.detection.compositional import (
-    OperationSpec,
-    OperationRegistry,
-    PipelineSpec,
+    ALL_OPERATIONS,
     ComposedPipeline,
     ComposedPipelineScorer,
-    ALL_OPERATIONS,
+    OperationRegistry,
+    OperationSpec,
+    PipelineSpec,
 )
 
 
@@ -20,7 +19,7 @@ def _make_synthetic_image(size=128, rng=None):
     # Add a bright central Gaussian source
     y, x = np.mgrid[0:size, 0:size]
     cy, cx = size // 2, size // 2
-    source = 500 * np.exp(-((y - cy) ** 2 + (x - cx) ** 2) / (2 * 10 ** 2))
+    source = 500 * np.exp(-((y - cy) ** 2 + (x - cx) ** 2) / (2 * 10**2))
     image += source
     return image
 

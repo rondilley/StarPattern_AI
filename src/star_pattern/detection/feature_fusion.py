@@ -130,9 +130,7 @@ def _compute_source_derived(sources: dict[str, Any]) -> dict[str, float]:
             dists = np.linalg.norm(pos_arr - centroid, axis=1)
             mean_dist = np.mean(dists)
             if mean_dist > 0:
-                derived["spatial_concentration"] = float(
-                    np.std(dists) / mean_dist
-                )
+                derived["spatial_concentration"] = float(np.std(dists) / mean_dist)
 
     return derived
 

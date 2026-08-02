@@ -60,7 +60,7 @@ class DetectionConfig:
     # Variability / time-domain detection
     variability_min_epochs: int = 10
     variability_significance: float = 3.0
-    variability_period_min: float = 0.1    # days
+    variability_period_min: float = 0.1  # days
     variability_period_max: float = 500.0  # days
 
     # Temporal (multi-epoch image differencing)

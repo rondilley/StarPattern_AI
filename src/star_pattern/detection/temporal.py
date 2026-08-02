@@ -81,23 +81,30 @@ class TemporalDetector:
                 continue
             # SNR map: NaN in non-overlap regions for clean visualization
             snr_map = np.abs(diff) / noise
-            residuals = self._detect_residuals(
-                diff, noise, epoch.image.wcs, epoch.mjd
-            )
+            residuals = self._detect_residuals(diff, noise, epoch.image.wcs, epoch.mjd)
             # Cap residuals per epoch to prevent O(n^2) cross-matching blowup
             if len(residuals) > 200:
                 residuals.sort(key=lambda r: r["peak_snr"], reverse=True)
                 residuals = residuals[:200]
-            all_residuals.append({
-                "mjd": epoch.mjd,
-                "residuals": residuals,
-            })
-            diag_diffs.append({
-                "mjd": epoch.mjd, "data": diff, "noise": noise,
-            })
-            diag_snr_maps.append({
-                "mjd": epoch.mjd, "data": snr_map,
-            })
+            all_residuals.append(
+                {
+                    "mjd": epoch.mjd,
+                    "residuals": residuals,
+                }
+            )
+            diag_diffs.append(
+                {
+                    "mjd": epoch.mjd,
+                    "data": diff,
+                    "noise": noise,
+                }
+            )
+            diag_snr_maps.append(
+                {
+                    "mjd": epoch.mjd,
+                    "data": snr_map,
+                }
+            )
             n_residuals_per_epoch.append(len(residuals))
 
         if not all_residuals:
@@ -113,9 +120,7 @@ class TemporalDetector:
         }
 
         # Classify residuals across epochs
-        classified = self._classify_residuals(
-            all_residuals, pixel_scale_arcsec
-        )
+        classified = self._classify_residuals(all_residuals, pixel_scale_arcsec)
 
         # Compute temporal score
         temporal_score = self._compute_temporal_score(classified)
@@ -139,9 +144,7 @@ class TemporalDetector:
             "n_moving": len(classified.get("moving_objects", [])),
         }
 
-    def _build_reference(
-        self, sorted_epochs: list[EpochImage]
-    ) -> tuple[np.ndarray | None, Any]:
+    def _build_reference(self, sorted_epochs: list[EpochImage]) -> tuple[np.ndarray | None, Any]:
         """Build a median-stack reference image from all epochs.
 
         Median naturally rejects single-epoch transients.
@@ -174,8 +177,6 @@ class TemporalDetector:
                 continue
 
             try:
-                from astropy.io.fits import Header
-                from astropy.wcs import WCS
                 reproj, footprint = reproject_interp(
                     (epoch.image.data.astype(np.float64), epoch.image.wcs),
                     ref_wcs,
@@ -233,6 +234,7 @@ class TemporalDetector:
         if ref_wcs is not None and epoch.image.wcs is not None:
             try:
                 from reproject import reproject_interp
+
                 reproj, footprint = reproject_interp(
                     (data, epoch.image.wcs),
                     ref_wcs,
@@ -327,17 +329,19 @@ class TemporalDetector:
                 except Exception:
                     pass
 
-            residuals.append({
-                "cx": cx,
-                "cy": cy,
-                "sky_ra": sky_ra,
-                "sky_dec": sky_dec,
-                "peak_snr": peak_snr,
-                "total_flux": total_flux,
-                "area": area,
-                "sign": sign,
-                "mjd": mjd,
-            })
+            residuals.append(
+                {
+                    "cx": cx,
+                    "cy": cy,
+                    "sky_ra": sky_ra,
+                    "sky_dec": sky_dec,
+                    "peak_snr": peak_snr,
+                    "total_flux": total_flux,
+                    "area": area,
+                    "sign": sign,
+                    "mjd": mjd,
+                }
+            )
 
         return residuals
 
@@ -358,7 +362,11 @@ class TemporalDetector:
         if not all_residuals:
             return {}
 
-        dipole_max_pix = self._dipole_max_sep / pixel_scale_arcsec if pixel_scale_arcsec and pixel_scale_arcsec > 0 else 5.0
+        dipole_max_pix = (
+            self._dipole_max_sep / pixel_scale_arcsec
+            if pixel_scale_arcsec and pixel_scale_arcsec > 0
+            else 5.0
+        )
 
         # Flatten all residuals with epoch index
         flat: list[dict[str, Any]] = []
@@ -395,8 +403,6 @@ class TemporalDetector:
         brightenings: list[dict[str, Any]] = []
         fadings: list[dict[str, Any]] = []
         moving_objects: list[dict[str, Any]] = []
-
-        n_epochs = len(all_residuals)
 
         for group in matched_groups:
             positive = [r for r in group if r["sign"] == "positive"]
@@ -446,7 +452,7 @@ class TemporalDetector:
                         neg_cx = np.mean([r["cx"] for r in negative])
                         pos_cy = np.mean([r["cy"] for r in positive])
                         neg_cy = np.mean([r["cy"] for r in negative])
-                        sep = np.sqrt((pos_cx - neg_cx)**2 + (pos_cy - neg_cy)**2)
+                        sep = np.sqrt((pos_cx - neg_cx) ** 2 + (pos_cy - neg_cy) ** 2)
                         if sep > 1.0:
                             moving_objects.append(finding)
                         else:
@@ -472,9 +478,7 @@ class TemporalDetector:
             "moving_objects": moving_objects,
         }
 
-    def _compute_temporal_score(
-        self, classified: dict[str, list[dict[str, Any]]]
-    ) -> float:
+    def _compute_temporal_score(self, classified: dict[str, list[dict[str, Any]]]) -> float:
         """Compute an overall temporal anomaly score from classified findings.
 
         Weights: new sources and moving objects score highest, then
@@ -504,12 +508,15 @@ class TemporalDetector:
 
         # Weight by type importance
         type_score = min(
-            (n_new * 0.3 + n_moving * 0.25 + n_bright * 0.2
-             + n_fading * 0.15 + n_disappeared * 0.1) / 3.0,
+            (n_new * 0.3 + n_moving * 0.25 + n_bright * 0.2 + n_fading * 0.15 + n_disappeared * 0.1)
+            / 3.0,
             1.0,
         )
 
-        return float(np.clip(
-            0.4 * snr_score + 0.35 * type_score + 0.25 * count_score,
-            0.0, 1.0,
-        ))
+        return float(
+            np.clip(
+                0.4 * snr_score + 0.35 * type_score + 0.25 * count_score,
+                0.0,
+                1.0,
+            )
+        )

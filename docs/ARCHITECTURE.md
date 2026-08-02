@@ -37,7 +37,7 @@ flowchart TD
     PR --> DEBATE[PatternDebate\nadvocate vs challenger + judge]
     PR --> CONS[PatternConsensus\nmulti-LLM rating 1-10]
 
-    AD --> EVO[EvolutionaryDiscovery\n60-gene GA + PipelineGenome\nadaptive mutation + replay]
+    AD --> EVO[EvolutionaryDiscovery\n72-gene GA + PipelineGenome\nadaptive mutation + replay]
     EVO --> |best genome| ED
 
     AD --> AL[ActiveLearner\nrefined threshold]
@@ -93,17 +93,19 @@ flowchart LR
 src/star_pattern/
     __init__.py              Package root, version = "0.1.0"
     __main__.py              Entry point: python -m star_pattern
-    cli.py                   Click CLI (7 subcommands)
+    cli.py                   Click CLI (11 subcommands)
     core/                    Foundation types and configuration
     data/                    Multi-survey data acquisition with caching
     detection/               14 pattern detectors + ensemble + feature fusion + meta-detector + compositional
     discovery/               Evolutionary optimization (GA + pipeline co-evolution)
-    llm/                     Multi-provider LLM hypothesis, debate, consensus
+    distributed/             Master/slave work distribution over asyncio sockets
+    llm/                     Multi-provider LLM strategy, hypothesis, debate, consensus
     ml/                      Neural network backbones, models, training, representation manager
-    evaluation/              Statistical testing, cross-reference, calibration
+    evaluation/              Statistical testing, confidence, cross-reference, calibration
     visualization/           Plots, overlays, reports
     pipeline/                Orchestration (autonomous loop, batch, active learning)
-    utils/                   GPU detection, logging, retry, run management
+    utils/                   Logging, retry, run management
+    utils/hardware/          GPU/NPU detection and GPU array operations
 ```
 
 ---
@@ -354,7 +356,7 @@ The `EnsembleDetector` is pixel-scale-aware: it reads `FITSImage.pixel_scale()` 
 
 ### 5.1 Detector Ensemble
 
-The `EnsembleDetector` orchestrates thirteen specialized detectors, each producing an independent score in [0, 1]. Scores are combined via configurable weights.
+The `EnsembleDetector` orchestrates fourteen specialized detectors, each producing an independent score in [0, 1]. Scores are combined via configurable weights.
 
 ```mermaid
 flowchart TD
@@ -625,7 +627,7 @@ The meta-score blends linear and learned scores: $\text{meta\_score} = (1 - w_\t
 
 ### 5.6 Compositional Detection (Evolved Pipelines)
 
-The `ComposedPipeline` system enables discovery of detection strategies not hard-coded in the 13 detectors. A pipeline is a sequence of 2-5 primitive operations:
+The `ComposedPipeline` system enables discovery of detection strategies not hard-coded in the 14 detectors. A pipeline is a sequence of 2-5 primitive operations:
 
 | Operation | Purpose |
 |---|---|
@@ -648,7 +650,9 @@ The `ComposedPipeline` system enables discovery of detection strategies not hard
 
 ### 6.1 Genome Structure
 
-The `DetectionGenome` encodes 54 detection parameters as a float vector. Each gene has a defined range, type, and biological analogy:
+The `DetectionGenome` encodes 72 detection parameters as a float vector. Each gene has a defined range, type, and biological analogy.
+
+> The diagram below shows the first 54 genes (G1-G54): the detector parameters and ensemble weights. It predates the temporal, enable-gate and meta genes and does not show them. `GENE_DEFINITIONS` in `discovery/genome.py` is the authoritative list: 48 detector and ensemble-weight genes, 12 `enable_*` gates, 6 temporal genes, and 6 meta/representation/compositional genes.
 
 ```mermaid
 flowchart LR
@@ -772,7 +776,7 @@ The 11 ensemble weight genes are normalized to sum to 1 in `to_detection_config(
 
 ```mermaid
 flowchart TD
-    INIT[Initialize Population\n10 presets + replay genomes + random] --> EVAL[Evaluate Fitness\nRun EnsembleDetector on image set]
+    INIT[Initialize Population\n12 presets + replay genomes + random] --> EVAL[Evaluate Fitness\nRun EnsembleDetector on image set]
     EVAL --> ADAPT[Adapt Mutation Rate\nIncrease on stagnation\nDecrease on improvement\nBounded 0.05-0.5]
     ADAPT --> ELITE[Keep Elite\ntop N genomes unchanged]
     ELITE --> SELECT[Tournament Selection\npick best from random subset of 3]
@@ -1099,26 +1103,36 @@ The manager buffers images during detection, periodically retrains the backbone 
 
 ### 9.1.1 Unified Confidence Scoring
 
-The `ConfidenceEvaluator` (in `evaluation/confidence.py`) replaces arbitrary hard caps with statistically defensible quality-floor filtering. Each detector's raw measurement maps to a p-value via the appropriate null-hypothesis distribution; p-values serve as the common currency across detectors.
+The `ConfidenceEvaluator` (in `evaluation/confidence.py`) replaces arbitrary hard caps with quality-floor filtering. Detections fall into **two evidence families**, and the two are never mixed.
 
-| Detector | Physical Quantity | Statistical Method | Quality Floor |
-|---|---|---|---|
-| Lens | Arc/ring SNR | `norm.sf(snr)` | SNR >= 3 (p < 0.0013) |
-| Distribution | Overdensity sigma | `norm.sf(sigma)` + Bonferroni for grid cells | sigma >= 3 after correction |
-| Galaxy | Tidal SNR, merger asymmetry sigma | Max sub-feature confidence | Any sub-feature SNR >= 3 |
-| Morphology | CAS z-scores vs normal galaxies | Fisher's combined p on individual CAS p-values | Fisher p < 0.05 |
-| Wavelet | Per-scale SNR (coefficient/MAD) | BH-FDR across scales | Corrected p < 0.05 at any scale |
-| Classical | Hough votes, Gabor energy | Poisson CDF for votes, `norm.sf` for Gabor | Any method p < 0.01 |
-| Kinematic | Group membership vs field rate | `1 - poisson.cdf(n-1, expected_field)` | p < 0.01 |
-| Transient | Deviation sigma | `2 * norm.sf(abs(sigma))` two-tailed | sigma >= 3 |
-| Sersic | Residual SNR, chi2 of fit | `norm.sf(snr)` for residuals, `chi2.sf` for fit | SNR >= 3 or chi2 p < 0.01 |
-| Population | Blue straggler/RGB fraction vs field rate | Binomial test | p < 0.05 |
-| Variability | Lomb-Scargle FAP, variability chi2 | FAP is already a p-value; `chi2.sf` for excess variance | FAP < 0.01 or chi2 p < 0.01 |
-| Temporal | Epoch-diff peak SNR | `norm.sf(snr)` | SNR >= 5 |
+**A p-value is not the common currency.** Only a detector that supplies a physical measurement with a real null model can produce one. A detector that supplies a unitless 0-1 score cannot, and reporting `1 - score` in a `p_value` field manufactures a probability that was never measured. Feeding such a number into the region-wide FDR correction invalidates the correction for every detection in the region, not only the manufactured ones.
 
-**Spatial grouping**: When multiple detectors fire within 5 arcsec (sky) or 15px (image) of each other, they are linked via a shared `group_id` using Union-Find. Each anomaly retains its own per-detector `ConfidenceScore`. Group summaries use Fisher's combined p-value across the group.
+| Detector | Physical Quantity | Evidence Family | Statistical Method | Quality Floor |
+|---|---|---|---|---|
+| Lens (arc/ring SNR) | SNR | tail | `norm.sf(snr)` | p <= 0.0013 (SNR >= 3) |
+| Lens (ring completeness) | completeness | heuristic | none: geometric fraction, no null | score >= 0.6 |
+| Distribution | Overdensity sigma | tail | `norm.sf(sigma)` + Bonferroni over grid cells | p <= 0.0013 |
+| Galaxy | `asymmetry_sigma`, `tidal_snr` | tail | `norm.sf` | p <= 0.0013 |
+| Galaxy (fallback) | `asymmetry`, `strength` | heuristic | none: 0-1 scores, not sigma | score >= 0.9 |
+| Morphology | CAS z-scores | tail | Fisher's combined p over CAS p-values | p <= 0.05 |
+| Morphology (fallback) | morphology score | heuristic | none | score >= 0.95 |
+| Wavelet | Per-scale peak SNR | tail | `norm.sf(snr)` + Bonferroni over scales | p <= 0.05 |
+| Classical | Hough votes, Gabor energy | heuristic | none: the Hough "null rate" was derived from the observation itself | score >= 0.5 |
+| Kinematic | Members vs field rate | tail | `poisson.sf(n-1, expected_field)` | p <= 0.01 |
+| Transient | Deviation sigma | tail | `2 * norm.sf(abs(sigma))` two-tailed | p <= 0.0013 |
+| Sersic | Residual SNR, fit chi2 | tail | `norm.sf(snr)`, `chi2.sf` | p <= 0.01 |
+| Population | Blue straggler/RGB fraction | tail | Binomial `binom.sf` vs literature field rate | p <= 0.05 |
+| Variability | Lomb-Scargle FAP, excess-variance chi2 | tail | FAP is a p-value by construction; `chi2.sf` | p <= 0.01 |
+| Temporal | Epoch-diff peak SNR | tail | `norm.sf(snr)` | p <= 3e-7 (SNR >= 5) |
+| Anomaly | Isolation Forest score | heuristic | none: min-max normalized within the current batch, not ranked against a calibrated null | score >= 0.95 |
 
-**Region-wide correction**: After per-detector quality-floor filtering, BH-FDR correction (via `statistical.py:multiple_comparison_correction`) is applied across all surviving anomalies in a region to control the false discovery rate.
+The heuristic cutoffs in the last column are **triage thresholds on a detector's own score scale, not significance thresholds**. They carry no false-positive rate. Each is set to reproduce the effective selectivity the detector had before the families were separated. Calibrating these detectors against blank-sky fields would let them rejoin the tail family with real p-values.
+
+**Spatial grouping**: When multiple detectors fire within 5 arcsec (sky) or 15px (image) of each other, they are linked via a shared `group_id` using Union-Find. Each anomaly retains its own `ConfidenceScore`. Group summaries combine only tail-family p-values with Fisher's method; heuristic members appear in the group detail marked `[not combined]` and are counted in `n_heuristic_members`.
+
+**Region-wide correction**: after quality-floor filtering, Benjamini-Hochberg correction (`statistical.py:multiple_comparison_correction`) runs across the tail family only. The implementation applies the step-up monotonicity pass over the **rank** sequence, matching `scipy.stats.false_discovery_control`; running it over the input sequence instead lets one strong detection drag every noise detection in the region down with it.
+
+**Ranking**: findings sort by evidence tier first and confidence second, so an uncalibrated heuristic score near 1.0 cannot outrank a genuine 5-sigma detection.
 
 ### 9.2 Per-Anomaly Extraction
 
@@ -1360,58 +1374,72 @@ flowchart LR
     CLI --> TRAIN[train\n--task --data\n--epochs --batch-size]
     CLI --> SURVEY[survey-status\n--state-file]
     CLI --> SETUP[setup-local\ndownload GGUF model]
+    CLI --> WIDE[fetch-wide\n--ra --dec --field-radius\n--tile-radius --overlap -o]
+    CLI --> SERVE[serve\n--host --port --auth-token]
+    CLI --> GPU[gpu-check\nreport accelerators]
 ```
 
 | Command | What It Does |
 |---|---|
 | `fetch` | Downloads FITS images and catalogs for specified or random regions |
+| `fetch-wide` | Tiles a wide field, fetches every tile, and mosaics the result |
 | `detect` | Runs `EnsembleDetector` on FITS files; saves JSON results and overlay PNGs |
 | `evolve` | Standalone evolutionary parameter optimization |
-| `discover` | Full autonomous discovery loop with optional LLM integration and HEALPix survey mode |
+| `discover` | Full autonomous discovery loop with optional LLM integration, HEALPix survey mode, and distributed workers |
 | `analyze` | LLM hypothesis generation and debate on a saved detection |
 | `survey-status` | Show HEALPix survey progress from a saved state file |
 | `train` | Train lens/morphology/anomaly neural network models |
 | `setup-local` | Download and configure local GGUF model for LlamaCpp |
+| `serve` | Run as a distributed worker node, accepting work from a master |
+| `gpu-check` | Report the GPU and NPU accelerators visible on this machine |
 
 ---
 
 ## 14. Testing Strategy
 
-651 tests across 33 test files, using real data and real APIs (no mocks):
+730 tests across 39 test files, using real data and real APIs (no mocks):
 
 | Test File | Count | Coverage |
 |---|---|---|
 | `test_data_sources.py` | 14 | DataCache operations, SkyRegion coordinates, SDSS fetch (real network) |
 | `test_detection.py` | 16 | All detectors on synthetic images, ensemble with catalog |
-| `test_evaluation.py` | 18 | Metrics, statistical tests, synthetic injection |
-| `test_evolution_improvements.py` | 27 | Adaptive mutation, experience replay, synthetic injection fitness, feedback retraining, genome expansion |
+| `test_evaluation.py` | 23 | Metrics, statistical tests, synthetic injection |
+| `test_evolution_improvements.py` | 36 | Adaptive mutation, experience replay, synthetic injection fitness, feedback retraining, genome expansion |
 | `test_evolutionary.py` | 7 | Presets, population init, selection, generation, short run, real fitness evaluation |
 | `test_fits_handler.py` | 11 | FITSImage normalization, tensor conversion, save/load, NaN handling |
 | `test_galaxy_detector.py` | 6 | Galaxy tidal features, mergers, color anomalies on synthetic data |
-| `test_genome.py` | 15 | Genome creation, mutation, crossover, distance, serialization, 43 genes, 10 presets |
+| `test_genome.py` | 15 | Genome creation, mutation, crossover, distance, serialization, 72 genes, 12 presets |
 | `test_llm_hypothesis.py` | 7 | Hypothesis generation, debate, consensus, provider discovery (real APIs) |
 | `test_pipeline.py` | 66 | RunManager, DiscoveryReport, PipelineConfig, PatternResult, DetectionConfig.from_genome_dict, fitness evaluation, image saving, report generation, Anomaly dataclass, _extract_anomalies (with confidence scoring and quality-floor filtering), anomaly table formatting, mosaic cutouts |
-| `test_confidence.py` | 108 | ConfidenceScore serialization, per-detector confidence methods (13 detectors), quality-floor filtering, BH-FDR correction, spatial grouping (Union-Find), group summary (Fisher combined p), integration with _extract_anomalies |
+| `test_confidence.py` | 122 | ConfidenceScore serialization, per-detector confidence methods (13 detectors), quality-floor filtering, BH-FDR correction, spatial grouping (Union-Find), group summary (Fisher combined p), integration with _extract_anomalies |
 | `test_proper_motion.py` | 6 | Co-moving groups, runaway stars, stream detection on synthetic catalogs |
-| `test_sersic.py` | 15 | Sersic b_n approximation, 1D profile, full analyzer (exponential disk, elliptical, noise, residuals, pixel scale) |
-| `test_stellar_population.py` | 10 | CMD analysis, MS/RGB/BS detection, insufficient data, SDSS color fallback |
-| `test_transient.py` | 6 | Astrometric noise, parallax anomalies, photometric outliers |
-| `test_wavelet.py` | 13 | A-trous convolution, decomposition (perfect reconstruction, point/extended sources), multi-scale detection |
+| `test_sersic.py` | 16 | Sersic b_n approximation, 1D profile, full analyzer (exponential disk, elliptical, noise, residuals, pixel scale) |
+| `test_stellar_population.py` | 11 | CMD analysis, MS/RGB/BS detection, insufficient data, SDSS color fallback |
+| `test_transient.py` | 8 | Astrometric noise, parallax anomalies, photometric outliers |
+| `test_wavelet.py` | 16 | A-trous convolution, decomposition (perfect reconstruction, point/extended sources), multi-scale detection |
 | `test_token_tracker.py` | 12 | Token tracking, budget enforcement, save/load, cached call handling |
-| `test_local_classifier.py` | 14 | Rule-based classification, ambiguity/novelty detection, rationale generation |
+| `test_local_classifier.py` | 13 | Rule-based classification, ambiguity/novelty detection, rationale generation |
 | `test_local_evaluator.py` | 11 | SNR-based verdicts, significance ratings, detector agreement, LLM escalation |
 | `test_strategy.py` | 11 | Strategy sessions, compact summaries, outcome tracking, batch review parsing |
-| `test_llm_cache.py` | 9 | Cache hit/miss, TTL expiry, hash determinism, corrupt file handling |
-| `test_variability.py` | 18 | Variability indices, Lomb-Scargle, outburst detection, classification, integration |
+| `test_llm_cache.py` | 10 | Cache hit/miss, TTL expiry, hash determinism, corrupt file handling |
+| `test_variability.py` | 25 | Variability indices, Lomb-Scargle, outburst detection, classification, integration |
 | `test_ztf_datasource.py` | 6 | ZTF data source name/bands/images, IRSA TAP availability |
 | `test_temporal.py` | 42 | Temporal detector synthetic tests (new source, disappeared, brightening, moving, noise, WCS), ensemble integration, genome temporal genes, config, feature fusion, ZTF epoch images (real network), diagnostics, overlay |
 | `test_multi_epoch_sources.py` | 23 | Stripe 82 footprint boundary, base class default, MAST/SDSS epoch images (real network), pipeline temporal merge (synthetic), SDSS MJD extraction |
 | `test_catalog_cache.py` | 13 | CatalogEntry serialization (roundtrip, None mag, complex properties, defaults), DataCache catalog operations (put/get, cache miss, source/region independence, persistence, collision avoidance, clear, large catalog, ZTF light curve roundtrip) |
-| `test_feature_fusion.py` | 8 | Feature extraction from detection dicts, missing/errored field handling, batch extraction, correct dimensionality |
-| `test_meta_detector.py` | 11 | Linear mode, GBM transition at 50 samples, NN transition at 200, feature importance, serialization |
-| `test_compositional.py` | 10 | Each primitive operation with synthetic images, pipeline chaining, scoring methods |
-| `test_pipeline_genome.py` | 12 | Random creation, mutation preserves validity (2-5 ops), crossover, serialization, preset loading |
-| `test_representation_manager.py` | 6 | CPU fallback initialization, embedding anomaly scoring, BYOL retrain trigger |
+| `test_feature_fusion.py` | 11 | Feature extraction from detection dicts, missing/errored field handling, batch extraction, correct dimensionality |
+| `test_meta_detector.py` | 10 | Linear mode, GBM transition at 50 samples, NN transition at 200, feature importance, serialization |
+| `test_compositional.py` | 19 | Each primitive operation with synthetic images, pipeline chaining, scoring methods |
+| `test_pipeline_genome.py` | 9 | Random creation, mutation preserves validity (2-5 ops), crossover, serialization, preset loading |
+| `test_representation_manager.py` | 11 | CPU fallback initialization, embedding anomaly scoring, BYOL retrain trigger |
+| `test_gpu_backends.py` | 46 | GPU/NPU backend enums and detection, cached backend consistency, device and array-module selection, torch/cupy conversion, hardware summary contract, ONNX providers and session creation, GPU array operations against scipy/numpy references, CPU-only fallback, `gpu-check` CLI |
+| `test_sdss.py` | 9 | SDSS declination footprint gate, image and catalog queries skipped out of footprint without a network call |
+| `test_detector_statelessness.py` | 5 | Detectors must not retain per-image pixel scale; results independent of call order for lens and classical detectors |
+| `test_distributed.py` | 25 | Wire protocol framing and HMAC auth, work unit and result serialization, master dispatch, slave server over real localhost TCP |
+| `test_healpix_survey.py` | 14 | HEALPix tiling, systematic sky coverage, survey state persistence and resume |
+| `test_evolution_summary.py` | 11 | Evolution history summarization and reporting |
+| `test_mosaic.py` | 5 | Reproject-based image stitching, WCS and empty-input error handling |
+| `test_tiling.py` | 9 | Hex-packed tile grid generation, overlap, sky coverage |
 
 Tests requiring network or API keys skip gracefully via `pytest.skip()`.
 
@@ -1420,7 +1448,7 @@ Tests requiring network or API keys skip gracefully via `pytest.skip()`.
 ## 15. Key Design Decisions
 
 **Why a genetic algorithm for detection parameters?**
-The detection pipeline has 54 parameters with complex interactions. Grid search is intractable (54 dimensions), random search is wasteful, and Bayesian optimization struggles with this many mixed discrete/continuous parameters. A GA naturally handles mixed types, maintains population diversity, and the fitness function can incorporate subjective quality metrics. Adaptive mutation rate and experience replay across runs further improve convergence.
+The detection pipeline has 72 parameters with complex interactions. Grid search is intractable (72 dimensions), random search is wasteful, and Bayesian optimization struggles with this many mixed discrete/continuous parameters. A GA naturally handles mixed types, maintains population diversity, and the fitness function can incorporate subjective quality metrics. Adaptive mutation rate and experience replay across runs further improve convergence.
 
 **Why multiple LLM providers?**
 No single LLM is best at everything. The adversarial debate assigns different providers to advocate, challenger, and judge roles to avoid self-reinforcing biases. Consensus scoring across providers is more robust than any single provider's rating. Provider fallback means the system stays operational even when one API is rate-limited.

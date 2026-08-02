@@ -7,43 +7,71 @@ name = "star-pattern-ai"
 version = "0.1.0"
 description = "AI-powered autonomous discovery of patterns in star fields"
 readme = "README.md"
-requires-python = ">=3.10"
+# numpy 2.1, astropy 7 and photutils 2.1 all require Python 3.11. A 3.10
+# interpreter cannot install the set this project is developed against;
+# pip silently back-solves to much older releases instead.
+requires-python = ">=3.11"
 license = {text = "MIT"}
 
+# Every dependency carries an upper bound on the next major release.
+# Lower bounds alone let a breaking major version arrive on a routine
+# install, which is how the same checkout produced two different
+# environments a month apart.
 dependencies = [
-    "numpy>=1.24",
-    "scipy>=1.10",
-    "matplotlib>=3.7",
-    "astropy>=5.3",
-    "astroquery>=0.4.6",
-    "photutils>=1.8",
-    "sep>=1.2",
-    "torch>=2.0",
-    "torchvision>=0.15",
-    "scikit-learn>=1.3",
-    "openai>=1.0",
-    "anthropic>=0.18",
-    "google-generativeai>=0.3",
-    "click>=8.1",
-    "rich>=13.0",
-    "tqdm>=4.65",
-    "Pillow>=10.0",
-    "requests>=2.31",
+    "numpy>=1.26,<3",
+    "scipy>=1.11,<2",
+    "matplotlib>=3.7,<4",
+    "astropy>=5.3,<8",
+    "astroquery>=0.4.7,<0.5",
+    "photutils>=1.8,<3",
+    # Pinned exactly, and NOT because this version is reproducible: none
+    # of them are. Every installable build tested (1.4.1, 1.4.0, and the
+    # sep-pjw 1.3.8 fork, which has since merged back into sep>=1.4.0)
+    # returns different deblended photometry for byte-identical input.
+    # 1.2.1 has no wheel for Python 3.12 and needs MSVC to build.
+    #
+    # The pin exists so the characterized behaviour cannot change under
+    # the project silently. tests/test_ensemble_characterization.py
+    # measures the instability against this exact version and its golden
+    # fixtures encode it. Raising the pin means re-running that suite and
+    # re-deriving its tolerances from fresh measurements.
+    "sep==1.4.1",
+    "torch>=2.0,<3",
+    "torchvision>=0.15,<1",
+    "scikit-learn>=1.3,<2",
+    "openai>=1.0,<3",
+    "anthropic>=0.40,<1",
+    "google-generativeai>=0.3,<1",
+    "click>=8.1,<9",
+    "rich>=13.0,<15",
+    "Pillow>=10.0,<13",
+    "requests>=2.31,<3",
+    # Imported unconditionally by detection/meta_detector.py. It arrives
+    # transitively via scikit-learn, but an undeclared import is a
+    # dependency you do not control.
+    "joblib>=1.3,<2",
 ]
 
 [project.optional-dependencies]
-gpu = ["cupy-cuda12x>=12.0"]
-ml-extra = ["umap-learn>=0.5", "hdbscan>=0.8"]
-local = ["llama-cpp-python>=0.2", "huggingface_hub>=0.20"]
-survey = ["astropy-healpix>=1.0"]
-timeseries = ["astroquery>=0.4.7"]
-report = ["reportlab>=4.0"]
+gpu = ["cupy-cuda12x>=12.0,<14"]
+ml-extra = ["umap-learn>=0.5,<1", "hdbscan>=0.8,<1"]
+local = ["llama-cpp-python>=0.2,<1", "huggingface_hub>=0.20,<1"]
+survey = ["astropy-healpix>=1.0,<2"]
+timeseries = ["astroquery>=0.4.7,<0.5"]
+report = ["reportlab>=4.0,<5"]
+# Wide-field mosaicking. data/mosaic.py imports reproject and its own
+# error message tells the user to install it, but no extra provided it,
+# so fetch-wide and --wide-field were unusable from a clean install.
+widefield = ["reproject>=0.13,<1"]
+# ONNX Runtime for the NPU path, plus the exporters the GPU backend
+# tests use to build a model fixture.
+npu = ["onnxruntime>=1.17,<2", "onnx>=1.15,<2", "onnxscript>=0.1"]
 dev = [
-    "pytest>=7.4",
-    "pytest-asyncio>=0.21",
-    "black>=23.0",
-    "ruff>=0.1",
-    "mypy>=1.5",
+    "pytest>=7.4,<10",
+    "pytest-timeout>=2.2,<3",
+    "black>=23.0,<27",
+    "ruff>=0.1,<1",
+    "mypy>=1.5,<2",
 ]
 
 [project.scripts]
@@ -54,10 +82,45 @@ where = ["src"]
 
 [tool.ruff]
 line-length = 100
-target-version = "py310"
+target-version = "py311"
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I"]
+# black owns line length and cannot split long string literals, URLs or
+# comments. Leaving E501 on means a permanent backlog ruff can never
+# clear, which trains people to ignore the whole report.
+ignore = ["E501"]
+
+[tool.ruff.lint.per-file-ignores]
+# "I" is the standard symbol for intensity in a Sersic profile. Renaming
+# it to satisfy a linter would make the test harder to check against the
+# literature.
+"tests/test_sersic.py" = ["E741"]
+# Tests bind a call result to document what the call returns even when
+# the assertion is about the call not raising.
+"tests/*" = ["F841"]
+
+# black defaults to 88 while ruff is set to 100. Without this section the
+# two tools disagree on every line between those widths and each undoes
+# the other's work.
+[tool.black]
+line-length = 100
+target-version = ["py311"]
+
+[tool.mypy]
+python_version = "3.11"
+mypy_path = "src"
+ignore_missing_imports = true
+warn_unused_configs = true
+# Astronomy and ML packages ship without type information. Silencing
+# them here keeps real findings visible instead of buried.
+[[tool.mypy.overrides]]
+module = [
+    "astropy.*", "astroquery.*", "photutils.*", "sep.*", "cupy.*",
+    "reproject.*", "healpy.*", "astropy_healpix.*", "umap.*", "hdbscan.*",
+    "onnxruntime.*", "llama_cpp.*", "google.*", "joblib.*", "zoobot.*",
+]
+ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

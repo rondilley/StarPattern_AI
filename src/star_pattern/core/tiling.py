@@ -67,24 +67,13 @@ class TileGrid:
             # Hex offset: odd rows shifted by half step
             ra_offset = (ra_step / 2) if j % 2 else 0
             for i in range(n_ra):
-                ra = (
-                    self.center_ra
-                    - radius_deg / max(cos_dec, 0.1)
-                    + i * ra_step
-                    + ra_offset
-                )
+                ra = self.center_ra - radius_deg / max(cos_dec, 0.1) + i * ra_step + ra_offset
                 ra = ra % 360  # Wrap RA
 
                 # Check if tile center is within field radius
-                sep = self._angular_sep(
-                    ra, dec, self.center_ra, self.center_dec
-                )
+                sep = self._angular_sep(ra, dec, self.center_ra, self.center_dec)
                 if sep <= self.field_radius_arcmin:
-                    tiles.append(
-                        SkyRegion(
-                            ra=ra, dec=dec, radius=self.tile_radius_arcmin
-                        )
-                    )
+                    tiles.append(SkyRegion(ra=ra, dec=dec, radius=self.tile_radius_arcmin))
 
                 if len(tiles) >= self.max_tiles:
                     break
@@ -100,9 +89,7 @@ class TileGrid:
         )
 
     @staticmethod
-    def _angular_sep(
-        ra1: float, dec1: float, ra2: float, dec2: float
-    ) -> float:
+    def _angular_sep(ra1: float, dec1: float, ra2: float, dec2: float) -> float:
         """Angular separation in arcminutes using Vincenty formula."""
         ra1_r = np.radians(ra1)
         dec1_r = np.radians(dec1)
@@ -112,15 +99,9 @@ class TileGrid:
 
         num = np.sqrt(
             (np.cos(dec2_r) * np.sin(dra)) ** 2
-            + (
-                np.cos(dec1_r) * np.sin(dec2_r)
-                - np.sin(dec1_r) * np.cos(dec2_r) * np.cos(dra)
-            )
-            ** 2
+            + (np.cos(dec1_r) * np.sin(dec2_r) - np.sin(dec1_r) * np.cos(dec2_r) * np.cos(dra)) ** 2
         )
-        den = np.sin(dec1_r) * np.sin(dec2_r) + np.cos(dec1_r) * np.cos(
-            dec2_r
-        ) * np.cos(dra)
+        den = np.sin(dec1_r) * np.sin(dec2_r) + np.cos(dec1_r) * np.cos(dec2_r) * np.cos(dra)
         sep_rad = np.arctan2(num, den)
         return float(np.degrees(sep_rad) * 60.0)  # arcminutes
 

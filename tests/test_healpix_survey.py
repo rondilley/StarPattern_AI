@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 import pytest
@@ -241,6 +240,7 @@ def test_findings_tracked(small_config: SurveyConfig, tmp_path: Path) -> None:
 def test_healpix_not_installed(monkeypatch: pytest.MonkeyPatch) -> None:
     """Raises ImportError with helpful message when astropy-healpix missing."""
     import builtins
+
     original_import = builtins.__import__
 
     def mock_import(name, *args, **kwargs):

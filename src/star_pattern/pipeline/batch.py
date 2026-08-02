@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any
 
 import numpy as np
 
@@ -13,8 +12,8 @@ from star_pattern.core.sky_region import SkyRegion
 from star_pattern.data.pipeline import DataPipeline
 from star_pattern.detection.ensemble import EnsembleDetector
 from star_pattern.evaluation.metrics import PatternResult
-from star_pattern.utils.run_manager import RunManager
 from star_pattern.utils.logging import get_logger
+from star_pattern.utils.run_manager import RunManager
 
 logger = get_logger("pipeline.batch")
 

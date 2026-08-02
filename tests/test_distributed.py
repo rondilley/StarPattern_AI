@@ -13,14 +13,16 @@ import pytest
 from star_pattern.distributed.config import DistributedConfig
 from star_pattern.distributed.protocol import (
     PROTOCOL_VERSION,
-    WorkUnit,
     WorkResult,
+    WorkUnit,
     make_auth,
     recv_message,
     send_message,
     verify_auth,
 )
 
+# Opens real TCP sockets on localhost; excluded from the offline CI run.
+pytestmark = pytest.mark.slow
 
 # --- Protocol tests ---
 
@@ -31,6 +33,7 @@ class TestProtocol:
     @pytest.fixture
     def event_loop_pair(self):
         """Create a connected reader/writer pair via localhost TCP."""
+
         async def _make_pair():
             connected = asyncio.Event()
             result = {}
@@ -45,16 +48,16 @@ class TestProtocol:
             reader, writer = await asyncio.open_connection("127.0.0.1", port)
             await connected.wait()
             return (
-                reader, writer,
-                result["server_reader"], result["server_writer"],
+                reader,
+                writer,
+                result["server_reader"],
+                result["server_writer"],
                 server,
             )
 
         loop = asyncio.new_event_loop()
         try:
-            client_r, client_w, server_r, server_w, server = loop.run_until_complete(
-                _make_pair()
-            )
+            client_r, client_w, server_r, server_w, server = loop.run_until_complete(_make_pair())
             yield loop, client_r, client_w, server_r, server_w, server
         finally:
             loop.run_until_complete(self._cleanup(server, client_w, server_w))
@@ -119,8 +122,7 @@ class TestProtocol:
             "payload": {
                 "work_id": "test-id",
                 "pattern_results": [
-                    {"ra": i * 0.1, "dec": i * 0.2, "score": i * 0.01}
-                    for i in range(500)
+                    {"ra": i * 0.1, "dec": i * 0.2, "score": i * 0.01} for i in range(500)
                 ],
             },
         }
@@ -233,9 +235,7 @@ class TestSerialization:
                     ],
                 }
             ],
-            detection_summaries=[
-                {"band": "r", "anomaly_score": 0.85, "n_anomalies": 1}
-            ],
+            detection_summaries=[{"band": "r", "anomaly_score": 0.85, "n_anomalies": 1}],
             elapsed_seconds=42.5,
         )
         d = result.to_dict()
@@ -380,12 +380,15 @@ class TestSlaveServerLifecycle:
 
             # Send handshake
             ts = time.time()
-            await send_message(writer, {
-                "type": "handshake",
-                "version": PROTOCOL_VERSION,
-                "auth_digest": make_auth("test-token", ts),
-                "timestamp": ts,
-            })
+            await send_message(
+                writer,
+                {
+                    "type": "handshake",
+                    "version": PROTOCOL_VERSION,
+                    "auth_digest": make_auth("test-token", ts),
+                    "timestamp": ts,
+                },
+            )
 
             # Receive ack
             ack = await recv_message(reader, timeout=5.0)
@@ -436,12 +439,15 @@ class TestSlaveServerLifecycle:
 
             # Send handshake with wrong auth
             ts = time.time()
-            await send_message(writer, {
-                "type": "handshake",
-                "version": PROTOCOL_VERSION,
-                "auth_digest": make_auth("wrong-token", ts),
-                "timestamp": ts,
-            })
+            await send_message(
+                writer,
+                {
+                    "type": "handshake",
+                    "version": PROTOCOL_VERSION,
+                    "auth_digest": make_auth("wrong-token", ts),
+                    "timestamp": ts,
+                },
+            )
 
             # Connection should be closed by slave
             await asyncio.sleep(0.2)
@@ -497,25 +503,31 @@ class TestMasterSlaveIntegration:
             reader, writer = await asyncio.open_connection("127.0.0.1", port)
 
             # Handshake (no auth)
-            await send_message(writer, {
-                "type": "handshake",
-                "version": PROTOCOL_VERSION,
-                "auth_digest": "",
-                "timestamp": 0,
-            })
+            await send_message(
+                writer,
+                {
+                    "type": "handshake",
+                    "version": PROTOCOL_VERSION,
+                    "auth_digest": "",
+                    "timestamp": 0,
+                },
+            )
             ack = await recv_message(reader, timeout=5.0)
             assert ack["type"] == "handshake_ack"
 
             # Send config update
-            await send_message(writer, {
-                "type": "config_update",
-                "payload": {
-                    "detection_config": {
-                        "source_extraction_threshold": 2.0,
+            await send_message(
+                writer,
+                {
+                    "type": "config_update",
+                    "payload": {
+                        "detection_config": {
+                            "source_extraction_threshold": 2.0,
+                        },
+                        "genome_dict": {},
                     },
-                    "genome_dict": {},
                 },
-            })
+            )
             await asyncio.sleep(0.2)
 
             # Verify detector was rebuilt
@@ -561,20 +573,26 @@ class TestMasterSlaveIntegration:
             reader, writer = await asyncio.open_connection("127.0.0.1", port)
 
             # Handshake
-            await send_message(writer, {
-                "type": "handshake",
-                "version": PROTOCOL_VERSION,
-                "auth_digest": "",
-                "timestamp": 0,
-            })
+            await send_message(
+                writer,
+                {
+                    "type": "handshake",
+                    "version": PROTOCOL_VERSION,
+                    "auth_digest": "",
+                    "timestamp": 0,
+                },
+            )
             ack = await recv_message(reader, timeout=5.0)
             assert ack["type"] == "handshake_ack"
 
             # Send heartbeat
-            await send_message(writer, {
-                "type": "heartbeat",
-                "timestamp": time.time(),
-            })
+            await send_message(
+                writer,
+                {
+                    "type": "heartbeat",
+                    "timestamp": time.time(),
+                },
+            )
 
             # Receive heartbeat response
             response = await recv_message(reader, timeout=5.0)
@@ -603,8 +621,8 @@ class TestMasterDispatcher:
     def test_connect_and_dispatch(self):
         """Master connects to a slave and dispatches work."""
         from star_pattern.core.config import PipelineConfig
-        from star_pattern.distributed.slave import SlaveServer
         from star_pattern.distributed.master import MasterDispatcher
+        from star_pattern.distributed.slave import SlaveServer
 
         slave_config = PipelineConfig()
         slave_config.distributed = DistributedConfig(
@@ -673,6 +691,7 @@ class TestPipelineConfigDistributed:
     def test_default_standalone(self):
         """PipelineConfig defaults to standalone mode."""
         from star_pattern.core.config import PipelineConfig
+
         config = PipelineConfig()
         assert config.distributed.mode == "standalone"
         assert config.distributed.slave_addresses == []
@@ -680,6 +699,7 @@ class TestPipelineConfigDistributed:
     def test_from_dict_with_distributed(self):
         """PipelineConfig.from_dict parses distributed section."""
         from star_pattern.core.config import PipelineConfig
+
         d = {
             "distributed": {
                 "mode": "master",
@@ -695,6 +715,7 @@ class TestPipelineConfigDistributed:
     def test_to_dict_includes_distributed(self):
         """PipelineConfig.to_dict includes distributed section."""
         from star_pattern.core.config import PipelineConfig
+
         config = PipelineConfig()
         d = config.to_dict()
         assert "distributed" in d

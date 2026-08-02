@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from typing import Any
-
 import numpy as np
 
 from star_pattern.core.fits_handler import FITSImage
@@ -52,12 +50,11 @@ class Mosaicker:
             )
         except ImportError as e:
             raise ImportError(
-                "reproject is required for mosaicking: "
-                "pip install reproject>=0.13"
+                "reproject is required for mosaicking: " "pip install reproject>=0.13"
             ) from e
 
-        from astropy.io import fits
         import astropy.units as u
+        from astropy.io import fits
 
         logger.info(f"Mosaicking {len(valid)} images")
 

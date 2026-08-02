@@ -6,13 +6,13 @@ import json
 from typing import Any
 
 from star_pattern.core.config import LLMConfig
-from star_pattern.llm.providers.base import LLMProvider
 from star_pattern.llm.prompts import (
-    SYSTEM_ASTRONOMER,
     DEBATE_ADVOCATE_PROMPT,
     DEBATE_CHALLENGER_PROMPT,
     DEBATE_JUDGE_PROMPT,
+    SYSTEM_ASTRONOMER,
 )
+from star_pattern.llm.providers.base import LLMProvider
 from star_pattern.utils.logging import get_logger
 
 logger = get_logger("llm.debate")
@@ -57,19 +57,24 @@ class PatternDebate:
         # Assign roles
         advocate = self.providers[0]
         challenger = self.providers[1 % len(self.providers)]
-        judge = self.providers[2 % len(self.providers)] if len(self.providers) > 2 else self.providers[0]
+        judge = (
+            self.providers[2 % len(self.providers)]
+            if len(self.providers) > 2
+            else self.providers[0]
+        )
 
         transcript: list[dict[str, Any]] = []
         advocate_args = ""
         challenger_args = ""
 
         n_rounds = self.config.debate_rounds
-        logger.info(f"Starting debate: {n_rounds} rounds, advocate={advocate.name}, challenger={challenger.name}")
+        logger.info(
+            f"Starting debate: {n_rounds} rounds, advocate={advocate.name}, challenger={challenger.name}"
+        )
 
         for round_num in range(n_rounds):
             previous = "\n".join(
-                f"{t['role']} ({t['provider']}): {t['argument'][:300]}"
-                for t in transcript
+                f"{t['role']} ({t['provider']}): {t['argument'][:300]}" for t in transcript
             )
 
             # Advocate argues
@@ -95,8 +100,7 @@ class PatternDebate:
 
             # Challenger argues
             previous = "\n".join(
-                f"{t['role']} ({t['provider']}): {t['argument'][:300]}"
-                for t in transcript
+                f"{t['role']} ({t['provider']}): {t['argument'][:300]}" for t in transcript
             )
             challenger_prompt = DEBATE_CHALLENGER_PROMPT.format(
                 detection_summary=detection_summary,

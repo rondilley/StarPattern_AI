@@ -136,9 +136,7 @@ class RepresentationManager:
             logger.debug(f"Embedding anomaly scoring failed: {e}")
             return 0.5
 
-    def buffer_image(
-        self, image: Any, embedding: np.ndarray
-    ) -> None:
+    def buffer_image(self, image: Any, embedding: np.ndarray) -> None:
         """Buffer an image and its embedding for future BYOL retraining.
 
         Args:
@@ -171,8 +169,8 @@ class RepresentationManager:
             return None
 
         try:
-            import tempfile
             import os
+            import tempfile
 
             # Write buffered images to temp directory for SSLPretrainer
             with tempfile.TemporaryDirectory() as tmp_dir:
@@ -189,9 +187,7 @@ class RepresentationManager:
 
                 save_path = None
                 if self._checkpoint_dir:
-                    save_path = str(
-                        self._checkpoint_dir / "byol_backbone.pt"
-                    )
+                    save_path = str(self._checkpoint_dir / "byol_backbone.pt")
 
                 history = pretrainer.pretrain(save_path=save_path)
 
@@ -270,9 +266,7 @@ class RepresentationManager:
         emb_path = path / "embedding_buffer.npy"
         if emb_path.exists():
             embeddings = np.load(str(emb_path))
-            self._embedding_buffer = [
-                embeddings[i] for i in range(len(embeddings))
-            ]
+            self._embedding_buffer = [embeddings[i] for i in range(len(embeddings))]
 
         logger.info(
             f"RepresentationManager state loaded: "

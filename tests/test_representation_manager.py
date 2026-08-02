@@ -4,7 +4,6 @@ import tempfile
 from pathlib import Path
 
 import numpy as np
-import pytest
 
 from star_pattern.core.config import RepresentationConfig
 from star_pattern.ml.representation_manager import RepresentationManager
@@ -12,9 +11,11 @@ from star_pattern.ml.representation_manager import RepresentationManager
 
 def _make_fake_image(size=64):
     """Create a fake FITSImage-like object with a .data attribute."""
+
     class FakeImage:
         def __init__(self, data):
             self.data = data
+
     return FakeImage(np.random.default_rng(42).normal(100, 10, (size, size)))
 
 

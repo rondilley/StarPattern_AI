@@ -93,6 +93,11 @@ def multiple_comparison_correction(
     Args:
         p_values: List of uncorrected p-values.
         method: 'bonferroni' or 'fdr' (Benjamini-Hochberg).
+
+    Returns:
+        Adjusted p-values in the input order. The 'fdr' branch returns
+        Benjamini-Hochberg adjusted p-values identical to
+        scipy.stats.false_discovery_control(p_values, method="bh").
     """
     n = len(p_values)
     if n == 0:
@@ -102,15 +107,17 @@ def multiple_comparison_correction(
         return [min(p * n, 1.0) for p in p_values]
 
     elif method == "fdr":
-        # Benjamini-Hochberg
-        indexed = sorted(enumerate(p_values), key=lambda x: x[1])
-        corrected = [0.0] * n
-        for rank, (orig_idx, p) in enumerate(indexed, 1):
-            corrected[orig_idx] = min(p * n / rank, 1.0)
-        # Enforce monotonicity
-        for i in range(n - 2, -1, -1):
-            corrected[i] = min(corrected[i], corrected[i + 1])
-        return corrected
+        # Benjamini-Hochberg. The step-up monotonicity pass must run over
+        # the RANK sequence, not the input sequence: walking input order
+        # mixes unrelated hypotheses and drags large p-values down to the
+        # smallest adjusted value in the set.
+        p = np.asarray(p_values, dtype=float)
+        order = np.argsort(p, kind="stable")
+        scaled = p[order] * n / np.arange(1, n + 1)
+        adjusted = np.minimum.accumulate(scaled[::-1])[::-1]
+        corrected = np.empty(n, dtype=float)
+        corrected[order] = np.clip(adjusted, 0.0, 1.0)
+        return [float(c) for c in corrected]
 
     raise ValueError(f"Unknown method: {method}")
 

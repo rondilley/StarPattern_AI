@@ -13,9 +13,9 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from star_pattern.core.sky_region import SkyRegion
+from star_pattern.llm.cache import LLMCache
 from star_pattern.llm.providers.base import LLMProvider
 from star_pattern.llm.token_tracker import TokenTracker, estimate_tokens
-from star_pattern.llm.cache import LLMCache
 from star_pattern.utils.logging import get_logger
 
 logger = get_logger("llm.strategy")
@@ -47,8 +47,7 @@ class StrategyResult:
             "detector_adjustments": self.detector_adjustments,
             "weight_adjustments": self.weight_adjustments,
             "focus_regions": [
-                {"ra": r.ra, "dec": r.dec, "radius": r.radius}
-                for r in self.focus_regions
+                {"ra": r.ra, "dec": r.dec, "radius": r.radius} for r in self.focus_regions
             ],
             "detection_strategy": self.detection_strategy,
             "stop_doing": self.stop_doing,
@@ -107,8 +106,10 @@ class StrategyAdvisor:
         from star_pattern.llm.prompts import STRATEGY_PROMPT
 
         summary_text = self._build_summary(
-            findings_summary, current_genome,
-            active_learning_stats, evolution_history,
+            findings_summary,
+            current_genome,
+            active_learning_stats,
+            evolution_history,
             previous_strategy_outcome,
         )
 
@@ -257,21 +258,15 @@ class StrategyAdvisor:
         pre = strategy.pre_metrics
         outcome = {
             "strategy_id": strategy_id,
-            "findings_delta": (
-                findings_after.get("n_total", 0)
-                - pre.get("n_findings", 0)
-            ),
+            "findings_delta": (findings_after.get("n_total", 0) - pre.get("n_findings", 0)),
             "high_confidence_delta": (
-                findings_after.get("n_high_confidence", 0)
-                - pre.get("n_high_confidence", 0)
+                findings_after.get("n_high_confidence", 0) - pre.get("n_high_confidence", 0)
             ),
             "interesting_rate_delta": (
-                findings_after.get("interesting_rate", 0)
-                - pre.get("interesting_rate", 0)
+                findings_after.get("interesting_rate", 0) - pre.get("interesting_rate", 0)
             ),
             "improved": (
-                findings_after.get("interesting_rate", 0)
-                > pre.get("interesting_rate", 0)
+                findings_after.get("interesting_rate", 0) > pre.get("interesting_rate", 0)
             ),
         }
 
@@ -342,9 +337,7 @@ class StrategyAdvisor:
         # Current ensemble weights
         weights = genome.get("ensemble_weights", {})
         if weights:
-            weight_str = ", ".join(
-                f"{k}={v:.2f}" for k, v in sorted(weights.items())
-            )
+            weight_str = ", ".join(f"{k}={v:.2f}" for k, v in sorted(weights.items()))
             lines.append(f"CURRENT WEIGHTS: {weight_str}")
 
         # Regions searched
@@ -368,10 +361,7 @@ class StrategyAdvisor:
             improved = prev_outcome.get("improved", False)
             delta = prev_outcome.get("findings_delta", 0)
             label = "improved" if improved else "no improvement"
-            lines.append(
-                f"PREVIOUS STRATEGY: {label}, "
-                f"findings_delta={delta}"
-            )
+            lines.append(f"PREVIOUS STRATEGY: {label}, " f"findings_delta={delta}")
 
         return "\n".join(lines)
 
@@ -422,9 +412,7 @@ class StrategyAdvisor:
                 try:
                     ra = float(region_data.get("ra", 0))
                     dec = float(region_data.get("dec", 0))
-                    result.focus_regions.append(
-                        SkyRegion(ra=ra, dec=dec, radius=3.0)
-                    )
+                    result.focus_regions.append(SkyRegion(ra=ra, dec=dec, radius=3.0))
                 except (ValueError, TypeError):
                     continue
 
@@ -442,9 +430,7 @@ class StrategyAdvisor:
 
         return result
 
-    def _parse_batch_review(
-        self, response: str, n_expected: int
-    ) -> list[dict[str, Any]]:
+    def _parse_batch_review(self, response: str, n_expected: int) -> list[dict[str, Any]]:
         """Parse batch review response into per-finding verdicts."""
         try:
             # Extract JSON

@@ -1,14 +1,16 @@
 """Tests for stellar population / CMD analysis."""
 
 import numpy as np
-import pytest
 
-from star_pattern.core.catalog import StarCatalog, CatalogEntry
+from star_pattern.core.catalog import CatalogEntry, StarCatalog
 from star_pattern.detection.stellar_population import StellarPopulationAnalyzer
 
 
 def _make_synthetic_catalog(
-    n_ms=80, n_rgb=15, n_bs=5, seed=42,
+    n_ms=80,
+    n_rgb=15,
+    n_bs=5,
+    seed=42,
 ) -> StarCatalog:
     """Create a synthetic star catalog with known populations.
 
@@ -24,37 +26,43 @@ def _make_synthetic_catalog(
     for i in range(n_ms):
         mag = rng.uniform(15, 21)
         color = 0.5 + 0.12 * (mag - 15) + rng.normal(0, 0.04)
-        entries.append(CatalogEntry(
-            source_id=f"MS_{i}",
-            ra=180 + rng.uniform(-0.01, 0.01),
-            dec=45 + rng.uniform(-0.01, 0.01),
-            mag=float(mag),
-            properties={"bp_rp": float(color)},
-        ))
+        entries.append(
+            CatalogEntry(
+                source_id=f"MS_{i}",
+                ra=180 + rng.uniform(-0.01, 0.01),
+                dec=45 + rng.uniform(-0.01, 0.01),
+                mag=float(mag),
+                properties={"bp_rp": float(color)},
+            )
+        )
 
     # Red giant branch: brighter than turnoff, very red
     for i in range(n_rgb):
         mag = rng.uniform(12, 15)
         color = 1.8 + rng.uniform(0, 1.0)
-        entries.append(CatalogEntry(
-            source_id=f"RGB_{i}",
-            ra=180 + rng.uniform(-0.01, 0.01),
-            dec=45 + rng.uniform(-0.01, 0.01),
-            mag=float(mag),
-            properties={"bp_rp": float(color)},
-        ))
+        entries.append(
+            CatalogEntry(
+                source_id=f"RGB_{i}",
+                ra=180 + rng.uniform(-0.01, 0.01),
+                dec=45 + rng.uniform(-0.01, 0.01),
+                mag=float(mag),
+                properties={"bp_rp": float(color)},
+            )
+        )
 
     # Blue stragglers: brighter than turnoff AND bluer
     for i in range(n_bs):
         mag = rng.uniform(12, 14.5)  # brighter than MS turnoff at ~15
         color = rng.uniform(-0.5, 0.0)  # very blue, well below turnoff color ~0.5
-        entries.append(CatalogEntry(
-            source_id=f"BS_{i}",
-            ra=180 + rng.uniform(-0.01, 0.01),
-            dec=45 + rng.uniform(-0.01, 0.01),
-            mag=float(mag),
-            properties={"bp_rp": float(color)},
-        ))
+        entries.append(
+            CatalogEntry(
+                source_id=f"BS_{i}",
+                ra=180 + rng.uniform(-0.01, 0.01),
+                dec=45 + rng.uniform(-0.01, 0.01),
+                mag=float(mag),
+                properties={"bp_rp": float(color)},
+            )
+        )
 
     return StarCatalog(entries=entries, source="synthetic")
 
@@ -109,7 +117,10 @@ class TestStellarPopulationAnalyzer:
         """Should handle catalogs with too few photometric entries."""
         entries = [
             CatalogEntry(
-                source_id=f"S_{i}", ra=180, dec=45, mag=15.0,
+                source_id=f"S_{i}",
+                ra=180,
+                dec=45,
+                mag=15.0,
                 properties={"bp_rp": 1.0},
             )
             for i in range(5)
@@ -125,7 +136,10 @@ class TestStellarPopulationAnalyzer:
         """Should handle catalog entries without color data."""
         entries = [
             CatalogEntry(
-                source_id=f"S_{i}", ra=180, dec=45, mag=15.0,
+                source_id=f"S_{i}",
+                ra=180,
+                dec=45,
+                mag=15.0,
                 properties={},  # no bp_rp
             )
             for i in range(50)

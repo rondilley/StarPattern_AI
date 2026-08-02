@@ -3,10 +3,13 @@
 import numpy as np
 import pytest
 
+from star_pattern.core.catalog import StarCatalog
 from star_pattern.core.sky_region import SkyRegion
-from star_pattern.core.catalog import CatalogEntry, StarCatalog
-from star_pattern.data.sdss import SDSSDataSource
 from star_pattern.data.cache import DataCache
+from star_pattern.data.sdss import SDSSDataSource
+
+# Requires live external services; excluded from the offline CI run.
+pytestmark = pytest.mark.network
 
 
 class TestDataCache:
@@ -52,8 +55,14 @@ class TestDataCache:
         cache = DataCache(tmp_path / "cache")
         # Put a path that doesn't actually exist on disk
         nonexistent = tmp_path / "gone.fits"
-        cache._index["fakekey"] = {"path": str(nonexistent), "source": "test",
-                                    "ra": 0, "dec": 0, "radius": 1, "band": ""}
+        cache._index["fakekey"] = {
+            "path": str(nonexistent),
+            "source": "test",
+            "ra": 0,
+            "dec": 0,
+            "radius": 1,
+            "band": "",
+        }
         cache._save_index()
         # get_path should clean up the stale entry
         result = cache.get_path("test", 0, 0, 1)

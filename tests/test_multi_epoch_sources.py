@@ -10,9 +10,6 @@ Covers:
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import Any
-
 import numpy as np
 import pytest
 from astropy.io.fits import Header
@@ -20,14 +17,18 @@ from astropy.wcs import WCS
 
 from star_pattern.core.fits_handler import FITSImage
 from star_pattern.core.sky_region import EpochImage, SkyRegion
-from star_pattern.data.sdss import SDSSDataSource
 from star_pattern.data.cache import DataCache
+from star_pattern.data.sdss import SDSSDataSource
 
+# Requires live external services; excluded from the offline CI run.
+pytestmark = pytest.mark.network
 
 # --- Helpers ---
 
-def _make_wcs(crval_ra: float = 0.0, crval_dec: float = 0.0,
-              cdelt: float = -0.0002777, naxis: int = 64) -> WCS:
+
+def _make_wcs(
+    crval_ra: float = 0.0, crval_dec: float = 0.0, cdelt: float = -0.0002777, naxis: int = 64
+) -> WCS:
     """Create a simple TAN WCS."""
     header = Header()
     header["NAXIS"] = 2
@@ -62,11 +63,15 @@ def _make_epoch(mjd: float, band: str = "r", source: str = "test") -> EpochImage
     wcs = _make_wcs()
     fits_img = _make_fits(data, wcs)
     return EpochImage(
-        image=fits_img, mjd=mjd, band=band, source=source,
+        image=fits_img,
+        mjd=mjd,
+        band=band,
+        source=source,
     )
 
 
 # --- Stripe 82 Footprint Tests ---
+
 
 class TestStripe82Footprint:
     """Test SDSSDataSource._in_stripe82() boundary logic."""
@@ -114,6 +119,7 @@ class TestStripe82Footprint:
 
 # --- Base Class Default Tests ---
 
+
 class TestBaseClassDefault:
     """Test that DataSource.fetch_epoch_images() returns empty dict."""
 
@@ -150,6 +156,7 @@ class TestBaseClassDefault:
 
 # --- MAST Epoch Image Tests (network) ---
 
+
 class TestMASTEpochImages:
     """Integration tests for MAST multi-epoch image fetching."""
 
@@ -166,6 +173,7 @@ class TestMASTEpochImages:
         """MAST should find epoch images for a well-observed HST field."""
         try:
             from astroquery.mast import Observations
+
             Observations.query_region  # verify accessible
         except Exception:
             pytest.skip("MAST service not available")
@@ -174,7 +182,9 @@ class TestMASTEpochImages:
         region = SkyRegion(ra=189.2, dec=62.2, radius=1.0)
         try:
             result = mast_source.fetch_epoch_images(
-                region, max_epochs=3, min_baseline_days=1.0,
+                region,
+                max_epochs=3,
+                min_baseline_days=1.0,
             )
         except Exception as e:
             pytest.skip(f"MAST query failed: {e}")
@@ -190,6 +200,7 @@ class TestMASTEpochImages:
 
 
 # --- SDSS Stripe 82 Epoch Image Tests (network) ---
+
 
 class TestSDSSStripe82EpochImages:
     """Integration tests for SDSS Stripe 82 multi-epoch fetching."""
@@ -207,6 +218,7 @@ class TestSDSSStripe82EpochImages:
         """Stripe 82 coordinates should yield multi-epoch images."""
         try:
             from astroquery.sdss import SDSS
+
             SDSS.query_region  # verify accessible
         except Exception:
             pytest.skip("SDSS service not available")
@@ -215,7 +227,9 @@ class TestSDSSStripe82EpochImages:
         region = SkyRegion(ra=0.0, dec=0.0, radius=1.0)
         try:
             result = sdss_source.fetch_epoch_images(
-                region, bands=["r"], max_epochs=3,
+                region,
+                bands=["r"],
+                max_epochs=3,
             )
         except Exception as e:
             pytest.skip(f"SDSS query failed: {e}")
@@ -236,23 +250,21 @@ class TestSDSSStripe82EpochImages:
 
 # --- Pipeline Temporal Merge Tests (synthetic) ---
 
+
 class TestPipelineTemporalMerge:
     """Test DataPipeline temporal merge logic with synthetic sources."""
 
     def test_merge_same_band_from_two_sources(self):
         """Epochs from two sources in the same band should merge and sort."""
-        from star_pattern.core.sky_region import RegionData
 
         region = SkyRegion(ra=0.0, dec=0.0, radius=3.0)
 
         # Simulate what the pipeline does: merge epoch dicts
         ztf_epochs = {
-            "r": [_make_epoch(59000.0, "r", "ztf"),
-                  _make_epoch(59100.0, "r", "ztf")],
+            "r": [_make_epoch(59000.0, "r", "ztf"), _make_epoch(59100.0, "r", "ztf")],
         }
         sdss_epochs = {
-            "r": [_make_epoch(58500.0, "r", "sdss"),
-                  _make_epoch(59050.0, "r", "sdss")],
+            "r": [_make_epoch(58500.0, "r", "sdss"), _make_epoch(59050.0, "r", "sdss")],
         }
 
         # Replicate pipeline merge logic
@@ -330,6 +342,7 @@ class TestPipelineTemporalMerge:
 
 
 # --- SDSS MJD Extraction Tests ---
+
 
 class TestSDSSMjdExtraction:
     """Test SDSSDataSource._extract_mjd_from_fits() with various headers."""

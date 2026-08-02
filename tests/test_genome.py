@@ -3,7 +3,7 @@
 import numpy as np
 import pytest
 
-from star_pattern.discovery.genome import DetectionGenome, GENE_DEFINITIONS
+from star_pattern.discovery.genome import GENE_DEFINITIONS, DetectionGenome
 
 
 class TestDetectionGenome:
@@ -67,10 +67,20 @@ class TestDetectionGenome:
         assert abs(total - 1.0) < 0.01
         # All 12 weight keys present
         assert len(weights) == 12
-        for key in ["classical", "morphology", "anomaly", "distribution",
-                     "galaxy", "kinematic", "transient",
-                     "sersic", "wavelet", "population", "variability",
-                     "temporal"]:
+        for key in [
+            "classical",
+            "morphology",
+            "anomaly",
+            "distribution",
+            "galaxy",
+            "kinematic",
+            "transient",
+            "sersic",
+            "wavelet",
+            "population",
+            "variability",
+            "temporal",
+        ]:
             assert key in weights
 
     def test_mutate(self):
@@ -113,11 +123,13 @@ class TestDetectionGenome:
 class TestPresets:
     def test_preset_count(self):
         from star_pattern.discovery.presets import get_preset_genomes
+
         presets = get_preset_genomes()
         assert len(presets) == 12
 
     def test_presets_valid(self):
         from star_pattern.discovery.presets import get_preset_genomes
+
         presets = get_preset_genomes(rng=np.random.default_rng(42))
         for preset in presets:
             assert len(preset.genes) == 72
@@ -127,6 +139,7 @@ class TestPresets:
 
     def test_kinematic_preset_weights(self):
         from star_pattern.discovery.presets import get_preset_genomes
+
         presets = get_preset_genomes(rng=np.random.default_rng(42))
         kinematic_preset = presets[5]  # Index 5 = kinematic
         config = kinematic_preset.to_detection_config()
@@ -137,6 +150,7 @@ class TestPresets:
 
     def test_transient_preset_weights(self):
         from star_pattern.discovery.presets import get_preset_genomes
+
         presets = get_preset_genomes(rng=np.random.default_rng(42))
         transient_preset = presets[6]  # Index 6 = transient
         config = transient_preset.to_detection_config()

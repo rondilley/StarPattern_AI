@@ -16,30 +16,35 @@ from typing import Any
 import numpy as np
 
 from star_pattern.core.config import (
-    PipelineConfig, DetectionConfig, EvolutionConfig, SurveyConfig,
-    TemporalConfig,
+    DetectionConfig,
+    EvolutionConfig,
+    PipelineConfig,
+    SurveyConfig,
 )
 from star_pattern.core.fits_handler import FITSImage
-from star_pattern.core.sky_region import SkyRegion, RegionData
+from star_pattern.core.sky_region import RegionData, SkyRegion
 from star_pattern.data.pipeline import DataPipeline
+from star_pattern.detection.compositional import ComposedPipeline, OperationSpec
 from star_pattern.detection.ensemble import EnsembleDetector
 from star_pattern.detection.local_classifier import LocalClassifier
 from star_pattern.detection.local_evaluator import LocalEvaluator
 from star_pattern.detection.meta_detector import MetaDetector, MetaDetectorConfig
-from star_pattern.detection.compositional import ComposedPipeline, OperationSpec
 from star_pattern.discovery.evolutionary import EvolutionaryDiscovery
 from star_pattern.discovery.genome import DetectionGenome
-from star_pattern.evaluation.metrics import Anomaly, PatternResult
 from star_pattern.evaluation.confidence import (
-    ConfidenceEvaluator, ConfidenceScore,
-    apply_fdr_correction, assign_spatial_groups,
+    _MAX_PER_DETECTOR_SYSTEM,
+    _MAX_PER_REGION_SYSTEM,
+    EVIDENCE_TAIL,
+    ConfidenceEvaluator,
+    apply_fdr_correction,
+    assign_spatial_groups,
     passes_quality_floor,
-    _MAX_PER_DETECTOR_SYSTEM, _MAX_PER_REGION_SYSTEM,
 )
 from star_pattern.evaluation.cross_reference import CatalogCrossReferencer
+from star_pattern.evaluation.metrics import Anomaly, PatternResult
 from star_pattern.pipeline.active_learning import ActiveLearner
-from star_pattern.utils.run_manager import RunManager
 from star_pattern.utils.logging import get_logger
+from star_pattern.utils.run_manager import RunManager
 
 logger = get_logger("pipeline.autonomous")
 
@@ -48,7 +53,9 @@ _confidence_evaluator = ConfidenceEvaluator()
 
 
 def _pixel_to_sky(
-    image: FITSImage | None, px: float, py: float,
+    image: FITSImage | None,
+    px: float,
+    py: float,
 ) -> tuple[float | None, float | None]:
     """Convert pixel coords to RA/Dec via WCS. Returns (None, None) on failure."""
     if image is None or image.wcs is None:
@@ -61,7 +68,8 @@ def _pixel_to_sky(
 
 
 def _extract_anomalies(
-    detection: dict[str, Any], image: FITSImage | None,
+    detection: dict[str, Any],
+    image: FITSImage | None,
 ) -> list[Anomaly]:
     """Extract individual anomalies from a detection result dict.
 
@@ -88,88 +96,127 @@ def _extract_anomalies(
         ax = arc.get("x", cx_lens)
         ay = arc.get("y", cy_lens)
         ra, dec = _pixel_to_sky(image, ax, ay)
-        anomalies.append(Anomaly(
-            anomaly_type="lens_arc",
-            detector="lens",
-            pixel_x=ax, pixel_y=ay,
-            sky_ra=ra, sky_dec=dec,
-            score=arc.get("snr", arc.get("strength", 0)),
-            properties={
-                k: arc[k] for k in ("radius", "angle_span", "snr", "strength")
-                if k in arc
-            },
-        ))
+        anomalies.append(
+            Anomaly(
+                anomaly_type="lens_arc",
+                detector="lens",
+                pixel_x=ax,
+                pixel_y=ay,
+                sky_ra=ra,
+                sky_dec=dec,
+                score=arc.get("snr", arc.get("strength", 0)),
+                properties={
+                    k: arc[k] for k in ("radius", "angle_span", "snr", "strength") if k in arc
+                },
+            )
+        )
     for ring in lens.get("rings", []):
         rx = ring.get("x", cx_lens)
         ry = ring.get("y", cy_lens)
         ra, dec = _pixel_to_sky(image, rx, ry)
-        anomalies.append(Anomaly(
-            anomaly_type="lens_ring",
-            detector="lens",
-            pixel_x=rx, pixel_y=ry,
-            sky_ra=ra, sky_dec=dec,
-            score=ring.get("completeness", ring.get("strength", 0)),
-            properties={
-                k: ring[k] for k in (
-                    "radius", "completeness", "is_complete_ring", "snr",
-                ) if k in ring
-            },
-        ))
+        anomalies.append(
+            Anomaly(
+                anomaly_type="lens_ring",
+                detector="lens",
+                pixel_x=rx,
+                pixel_y=ry,
+                sky_ra=ra,
+                sky_dec=dec,
+                score=ring.get("completeness", ring.get("strength", 0)),
+                properties={
+                    k: ring[k]
+                    for k in (
+                        "radius",
+                        "completeness",
+                        "is_complete_ring",
+                        "snr",
+                    )
+                    if k in ring
+                },
+            )
+        )
 
     # Distribution overdensities
     dist = detection.get("distribution", {})
     for od in dist.get("overdensities", []):
         ox, oy = od.get("x", 0), od.get("y", 0)
         ra, dec = _pixel_to_sky(image, ox, oy)
-        anomalies.append(Anomaly(
-            anomaly_type="overdensity",
-            detector="distribution",
-            pixel_x=ox, pixel_y=oy,
-            sky_ra=ra, sky_dec=dec,
-            score=od.get("sigma", od.get("significance", 0)),
-            properties={
-                k: od[k] for k in (
-                    "radius_px", "n_sources", "sigma", "significance",
-                ) if k in od
-            },
-        ))
+        anomalies.append(
+            Anomaly(
+                anomaly_type="overdensity",
+                detector="distribution",
+                pixel_x=ox,
+                pixel_y=oy,
+                sky_ra=ra,
+                sky_dec=dec,
+                score=od.get("sigma", od.get("significance", 0)),
+                properties={
+                    k: od[k]
+                    for k in (
+                        "radius_px",
+                        "n_sources",
+                        "sigma",
+                        "significance",
+                    )
+                    if k in od
+                },
+            )
+        )
 
     # Wavelet multiscale objects (skip individual detections -- too many)
     wavelet = detection.get("wavelet", {})
     for ms in wavelet.get("multiscale_objects", []):
         mx, my = ms.get("x", 0), ms.get("y", 0)
         ra, dec = _pixel_to_sky(image, mx, my)
-        anomalies.append(Anomaly(
-            anomaly_type="multiscale_object",
-            detector="wavelet",
-            pixel_x=mx, pixel_y=my,
-            sky_ra=ra, sky_dec=dec,
-            score=ms.get("n_scales", ms.get("score", 0)),
-            properties={
-                k: ms[k] for k in (
-                    "min_scale", "max_scale", "n_scales",
-                    "peak_snr", "max_significance",
-                ) if k in ms
-            },
-        ))
+        anomalies.append(
+            Anomaly(
+                anomaly_type="multiscale_object",
+                detector="wavelet",
+                pixel_x=mx,
+                pixel_y=my,
+                sky_ra=ra,
+                sky_dec=dec,
+                score=ms.get("n_scales", ms.get("score", 0)),
+                properties={
+                    k: ms[k]
+                    for k in (
+                        "min_scale",
+                        "max_scale",
+                        "n_scales",
+                        "peak_snr",
+                        "max_significance",
+                    )
+                    if k in ms
+                },
+            )
+        )
 
     # Galaxy tidal features
     galaxy = detection.get("galaxy", {})
     for feat in galaxy.get("tidal_features", []):
         fx, fy = feat.get("x", 0), feat.get("y", 0)
         ra, dec = _pixel_to_sky(image, fx, fy)
-        anomalies.append(Anomaly(
-            anomaly_type="tidal_feature",
-            detector="galaxy",
-            pixel_x=fx, pixel_y=fy,
-            sky_ra=ra, sky_dec=dec,
-            score=feat.get("strength", feat.get("snr", 0)),
-            properties={
-                k: feat[k] for k in (
-                    "area", "orientation", "strength", "tidal_snr",
-                ) if k in feat
-            },
-        ))
+        anomalies.append(
+            Anomaly(
+                anomaly_type="tidal_feature",
+                detector="galaxy",
+                pixel_x=fx,
+                pixel_y=fy,
+                sky_ra=ra,
+                sky_dec=dec,
+                score=feat.get("strength", feat.get("snr", 0)),
+                properties={
+                    k: feat[k]
+                    for k in (
+                        "area",
+                        "orientation",
+                        "strength",
+                        "tidal_snr",
+                    )
+                    if k in feat
+                },
+            )
+        )
 
     # Galaxy merger nuclei
     nuclei = galaxy.get("merger_nuclei", [])
@@ -179,36 +226,44 @@ def _extract_anomalies(
             n1 = mc.get("nucleus_1", {})
             nx, ny = n1.get("x", 0), n1.get("y", 0)
             ra, dec = _pixel_to_sky(image, nx, ny)
-            anomalies.append(Anomaly(
-                anomaly_type="merger",
-                detector="galaxy",
-                pixel_x=nx, pixel_y=ny,
-                sky_ra=ra, sky_dec=dec,
-                score=mc.get("asymmetry", 0),
-                properties={
-                    "n_nuclei": 2,
-                    "asymmetry": mc.get("asymmetry", 0),
-                    "asymmetry_sigma": mc.get("asymmetry_sigma", 0),
-                },
-            ))
+            anomalies.append(
+                Anomaly(
+                    anomaly_type="merger",
+                    detector="galaxy",
+                    pixel_x=nx,
+                    pixel_y=ny,
+                    sky_ra=ra,
+                    sky_dec=dec,
+                    score=mc.get("asymmetry", 0),
+                    properties={
+                        "n_nuclei": 2,
+                        "asymmetry": mc.get("asymmetry", 0),
+                        "asymmetry_sigma": mc.get("asymmetry_sigma", 0),
+                    },
+                )
+            )
     if nuclei:
         n0 = nuclei[0]
         nx, ny = n0.get("x", 0), n0.get("y", 0)
         ra, dec = _pixel_to_sky(image, nx, ny)
         asymmetry = galaxy.get("asymmetry", 0)
         asymmetry_sigma = galaxy.get("asymmetry_sigma", 0)
-        anomalies.append(Anomaly(
-            anomaly_type="merger",
-            detector="galaxy",
-            pixel_x=nx, pixel_y=ny,
-            sky_ra=ra, sky_dec=dec,
-            score=asymmetry,
-            properties={
-                "n_nuclei": len(nuclei),
-                "asymmetry": asymmetry,
-                "asymmetry_sigma": asymmetry_sigma,
-            },
-        ))
+        anomalies.append(
+            Anomaly(
+                anomaly_type="merger",
+                detector="galaxy",
+                pixel_x=nx,
+                pixel_y=ny,
+                sky_ra=ra,
+                sky_dec=dec,
+                score=asymmetry,
+                properties={
+                    "n_nuclei": len(nuclei),
+                    "asymmetry": asymmetry,
+                    "asymmetry_sigma": asymmetry_sigma,
+                },
+            )
+        )
 
     # Classical Hough arcs (uses center_x/center_y keys)
     classical = detection.get("classical", {})
@@ -218,19 +273,22 @@ def _extract_anomalies(
         if ax is None or ay is None:
             continue
         ra, dec = _pixel_to_sky(image, ax, ay)
-        anomalies.append(Anomaly(
-            anomaly_type="classical_arc",
-            detector="classical",
-            pixel_x=ax, pixel_y=ay,
-            sky_ra=ra, sky_dec=dec,
-            score=arc.get("strength", arc.get("votes", 0)),
-            properties={
-                k: arc[k] for k in ("radius", "strength", "votes") if k in arc
-            } | {
-                "hough_votes": arc.get("strength", 0),
-                "gabor_energy": classical.get("gabor_energy", 0),
-            },
-        ))
+        anomalies.append(
+            Anomaly(
+                anomaly_type="classical_arc",
+                detector="classical",
+                pixel_x=ax,
+                pixel_y=ay,
+                sky_ra=ra,
+                sky_dec=dec,
+                score=arc.get("strength", arc.get("votes", 0)),
+                properties={k: arc[k] for k in ("radius", "strength", "votes") if k in arc}
+                | {
+                    "hough_votes": arc.get("strength", 0),
+                    "gabor_energy": classical.get("gabor_energy", 0),
+                },
+            )
+        )
 
     # Sersic residual features
     sersic = detection.get("sersic", {})
@@ -239,116 +297,164 @@ def _extract_anomalies(
     for feat in sersic.get("residual_features", []):
         fx, fy = feat.get("x", 0), feat.get("y", 0)
         ra, dec = _pixel_to_sky(image, fx, fy)
-        anomalies.append(Anomaly(
-            anomaly_type="sersic_residual",
-            detector="sersic",
-            pixel_x=fx, pixel_y=fy,
-            sky_ra=ra, sky_dec=dec,
-            score=abs(feat.get("peak_snr", feat.get("snr", 0))),
-            properties={
-                k: feat[k] for k in ("area_px", "peak_snr", "dist_in_re", "type")
-                if k in feat
-            } | {
-                "residual_snr": abs(feat.get("peak_snr", 0)),
-                "chi2_reduced": chi2_reduced,
-            },
-        ))
+        anomalies.append(
+            Anomaly(
+                anomaly_type="sersic_residual",
+                detector="sersic",
+                pixel_x=fx,
+                pixel_y=fy,
+                sky_ra=ra,
+                sky_dec=dec,
+                score=abs(feat.get("peak_snr", feat.get("snr", 0))),
+                properties={
+                    k: feat[k] for k in ("area_px", "peak_snr", "dist_in_re", "type") if k in feat
+                }
+                | {
+                    "residual_snr": abs(feat.get("peak_snr", 0)),
+                    "chi2_reduced": chi2_reduced,
+                },
+            )
+        )
 
     # --- Catalog-based detectors (already have RA/Dec) ---
 
     kinematic = detection.get("kinematic", {})
     for grp in kinematic.get("comoving_groups", []):
-        anomalies.append(Anomaly(
-            anomaly_type="comoving_group",
-            detector="kinematic",
-            sky_ra=grp.get("mean_ra", grp.get("center_ra")),
-            sky_dec=grp.get("mean_dec", grp.get("center_dec")),
-            score=grp.get("significance", grp.get("score", 0)),
-            properties={
-                k: grp[k] for k in (
-                    "n_members", "mean_pmra", "mean_pmdec",
-                    "pm_dispersion", "expected_field",
-                ) if k in grp
-            },
-        ))
+        anomalies.append(
+            Anomaly(
+                anomaly_type="comoving_group",
+                detector="kinematic",
+                sky_ra=grp.get("mean_ra", grp.get("center_ra")),
+                sky_dec=grp.get("mean_dec", grp.get("center_dec")),
+                score=grp.get("significance", grp.get("score", 0)),
+                properties={
+                    k: grp[k]
+                    for k in (
+                        "n_members",
+                        "mean_pmra",
+                        "mean_pmdec",
+                        "pm_dispersion",
+                        "expected_field",
+                    )
+                    if k in grp
+                },
+            )
+        )
 
     for stream in kinematic.get("stream_candidates", []):
-        anomalies.append(Anomaly(
-            anomaly_type="stellar_stream",
-            detector="kinematic",
-            sky_ra=stream.get("mean_ra", stream.get("center_ra")),
-            sky_dec=stream.get("mean_dec", stream.get("center_dec")),
-            score=stream.get("significance", stream.get("score", 0)),
-            properties={
-                k: stream[k] for k in (
-                    "n_members", "extent_deg", "mean_pmra", "mean_pmdec",
-                ) if k in stream
-            },
-        ))
+        anomalies.append(
+            Anomaly(
+                anomaly_type="stellar_stream",
+                detector="kinematic",
+                sky_ra=stream.get("mean_ra", stream.get("center_ra")),
+                sky_dec=stream.get("mean_dec", stream.get("center_dec")),
+                score=stream.get("significance", stream.get("score", 0)),
+                properties={
+                    k: stream[k]
+                    for k in (
+                        "n_members",
+                        "extent_deg",
+                        "mean_pmra",
+                        "mean_pmdec",
+                    )
+                    if k in stream
+                },
+            )
+        )
 
     for star in kinematic.get("runaway_stars", []):
-        anomalies.append(Anomaly(
-            anomaly_type="runaway_star",
-            detector="kinematic",
-            sky_ra=star.get("ra"),
-            sky_dec=star.get("dec"),
-            score=star.get("deviation_sigma", star.get("pm_total", 0)),
-            properties={
-                k: star[k] for k in (
-                    "pm_total", "pmra", "pmdec", "deviation_sigma",
-                ) if k in star
-            },
-        ))
+        anomalies.append(
+            Anomaly(
+                anomaly_type="runaway_star",
+                detector="kinematic",
+                sky_ra=star.get("ra"),
+                sky_dec=star.get("dec"),
+                score=star.get("deviation_sigma", star.get("pm_total", 0)),
+                properties={
+                    k: star[k]
+                    for k in (
+                        "pm_total",
+                        "pmra",
+                        "pmdec",
+                        "deviation_sigma",
+                    )
+                    if k in star
+                },
+            )
+        )
 
     # Transient outliers (catalog-based: ra/dec, no pixel coords)
     transient = detection.get("transient", {})
     for out in transient.get("flux_outliers", []):
-        anomalies.append(Anomaly(
-            anomaly_type="flux_outlier",
-            detector="transient",
-            sky_ra=out.get("ra"),
-            sky_dec=out.get("dec"),
-            score=out.get("deviation_sigma", out.get("deviation", 0)),
-            properties={
-                k: out[k] for k in (
-                    "deviation_sigma", "deviation", "type", "source_id",
-                ) if k in out
-            },
-        ))
+        anomalies.append(
+            Anomaly(
+                anomaly_type="flux_outlier",
+                detector="transient",
+                sky_ra=out.get("ra"),
+                sky_dec=out.get("dec"),
+                score=out.get("deviation_sigma", out.get("deviation", 0)),
+                properties={
+                    k: out[k]
+                    for k in (
+                        "deviation_sigma",
+                        "deviation",
+                        "type",
+                        "source_id",
+                    )
+                    if k in out
+                },
+            )
+        )
 
     # Variability candidates
     variability = detection.get("variability", {})
     for vc in variability.get("variable_candidates", []):
         var_idx = vc.get("variability_index", {})
         chi2_var = var_idx.get("chi2_reduced", 0) if isinstance(var_idx, dict) else 0
-        anomalies.append(Anomaly(
-            anomaly_type="variable_star",
-            detector="variability",
-            sky_ra=vc.get("ra"),
-            sky_dec=vc.get("dec"),
-            score=vc.get("score", vc.get("variability_index", 0)),
-            properties={
-                k: vc[k] for k in (
-                    "classification", "score", "best_period",
-                    "variability_index", "source_id",
-                ) if k in vc
-            } | {"chi2_variability": chi2_var},
-        ))
+        anomalies.append(
+            Anomaly(
+                anomaly_type="variable_star",
+                detector="variability",
+                sky_ra=vc.get("ra"),
+                sky_dec=vc.get("dec"),
+                score=vc.get("score", vc.get("variability_index", 0)),
+                properties={
+                    k: vc[k]
+                    for k in (
+                        "classification",
+                        "score",
+                        "best_period",
+                        "variability_index",
+                        "source_id",
+                    )
+                    if k in vc
+                }
+                | {"chi2_variability": chi2_var},
+            )
+        )
     for pc in variability.get("periodic_candidates", []):
         periodogram = pc.get("periodogram", {})
         fap = periodogram.get("fap") if isinstance(periodogram, dict) else pc.get("fap")
-        anomalies.append(Anomaly(
-            anomaly_type="periodic_variable",
-            detector="variability",
-            sky_ra=pc.get("ra"),
-            sky_dec=pc.get("dec"),
-            score=pc.get("power", pc.get("score", 0)),
-            properties={
-                k: pc[k] for k in (
-                    "period", "power", "fap", "source_id",
-                ) if k in pc
-            } | ({"fap": fap} if fap is not None else {}),
-        ))
+        anomalies.append(
+            Anomaly(
+                anomaly_type="periodic_variable",
+                detector="variability",
+                sky_ra=pc.get("ra"),
+                sky_dec=pc.get("dec"),
+                score=pc.get("power", pc.get("score", 0)),
+                properties={
+                    k: pc[k]
+                    for k in (
+                        "period",
+                        "power",
+                        "fap",
+                        "source_id",
+                    )
+                    if k in pc
+                }
+                | ({"fap": fap} if fap is not None else {}),
+            )
+        )
 
     # Stellar population candidates
     population = detection.get("population", {})
@@ -356,29 +462,33 @@ def _extract_anomalies(
     bs_data = population.get("blue_stragglers", {})
     n_bs = bs_data.get("n_blue_stragglers", 0)
     if n_bs > 0:
-        anomalies.append(Anomaly(
-            anomaly_type="blue_straggler",
-            detector="population",
-            score=bs_data.get("bs_fraction", 0),
-            properties={
-                "n_blue_stragglers": n_bs,
-                "bs_fraction": bs_data.get("bs_fraction", 0),
-                "n_sources_with_color": n_sources_with_color,
-            },
-        ))
+        anomalies.append(
+            Anomaly(
+                anomaly_type="blue_straggler",
+                detector="population",
+                score=bs_data.get("bs_fraction", 0),
+                properties={
+                    "n_blue_stragglers": n_bs,
+                    "bs_fraction": bs_data.get("bs_fraction", 0),
+                    "n_sources_with_color": n_sources_with_color,
+                },
+            )
+        )
     n_rg = population.get("n_red_giants", 0)
     if n_rg > 0:
         rg_data = population.get("red_giants", population)
-        anomalies.append(Anomaly(
-            anomaly_type="red_giant",
-            detector="population",
-            score=rg_data.get("rgb_fraction", 0),
-            properties={
-                "n_red_giants": n_rg,
-                "rgb_fraction": rg_data.get("rgb_fraction", 0),
-                "n_sources_with_color": n_sources_with_color,
-            },
-        ))
+        anomalies.append(
+            Anomaly(
+                anomaly_type="red_giant",
+                detector="population",
+                score=rg_data.get("rgb_fraction", 0),
+                properties={
+                    "n_red_giants": n_rg,
+                    "rgb_fraction": rg_data.get("rgb_fraction", 0),
+                    "n_sources_with_color": n_sources_with_color,
+                },
+            )
+        )
 
     # Temporal change detections (multi-epoch image differencing)
     temporal = detection.get("temporal", {})
@@ -392,19 +502,21 @@ def _extract_anomalies(
         ]
         for src_key, anom_type in _temporal_keys:
             for src in temporal.get(src_key, []):
-                anomalies.append(Anomaly(
-                    anomaly_type=anom_type,
-                    detector="temporal",
-                    sky_ra=src.get("sky_ra"),
-                    sky_dec=src.get("sky_dec"),
-                    pixel_x=src.get("cx"),
-                    pixel_y=src.get("cy"),
-                    score=src.get("peak_snr", 0),
-                    properties={
-                        "peak_snr": src.get("peak_snr", 0),
-                        "n_epochs_detected": src.get("n_epochs_detected", 0),
-                    },
-                ))
+                anomalies.append(
+                    Anomaly(
+                        anomaly_type=anom_type,
+                        detector="temporal",
+                        sky_ra=src.get("sky_ra"),
+                        sky_dec=src.get("sky_dec"),
+                        pixel_x=src.get("cx"),
+                        pixel_y=src.get("cy"),
+                        score=src.get("peak_snr", 0),
+                        properties={
+                            "peak_snr": src.get("peak_snr", 0),
+                            "n_epochs_detected": src.get("n_epochs_detected", 0),
+                        },
+                    )
+                )
 
     # --- Confidence scoring and quality-floor filtering ---
     # Compute per-anomaly ConfidenceScore grounded in physical measurements.
@@ -425,7 +537,8 @@ def _extract_anomalies(
         # Quality floor: keep only anomalies whose p-value passes
         # the detector's threshold
         passing = [
-            a for a in det_anomalies
+            a
+            for a in det_anomalies
             if a.confidence is not None and passes_quality_floor(a.confidence, det_name)
         ]
 
@@ -446,13 +559,18 @@ def _extract_anomalies(
     # Spatial grouping of co-located anomalies
     assign_spatial_groups(scored)
 
-    # Sort by confidence (descending), fall back to score
-    def _sort_key(a: Anomaly) -> float:
-        if a.confidence is not None:
-            return a.confidence.confidence
-        return a.score
+    # Rank by evidence tier first, then by confidence within the tier.
+    # An uncalibrated heuristic score of 0.99 must not outrank a genuine
+    # 5-sigma detection just because both land near 1.0 on the same axis.
+    # Tier ascends (0 = tail probability, 1 = heuristic, 2 = unscored)
+    # and confidence descends, hence the negation.
+    def _sort_key(a: Anomaly) -> tuple[int, float]:
+        if a.confidence is None:
+            return (2, -a.score)
+        tier = 0 if a.confidence.evidence_basis == EVIDENCE_TAIL else 1
+        return (tier, -a.confidence.confidence)
 
-    scored.sort(key=_sort_key, reverse=True)
+    scored.sort(key=_sort_key)
 
     # System protection limit for the whole region
     return scored[:_MAX_PER_REGION_SYSTEM]
@@ -497,9 +615,7 @@ class AutonomousDiscovery:
             )
             self._meta_detector = MetaDetector(meta_config)
 
-        self.detector = EnsembleDetector(
-            config.detection, meta_detector=self._meta_detector
-        )
+        self.detector = EnsembleDetector(config.detection, meta_detector=self._meta_detector)
         self.cross_ref = CatalogCrossReferencer()
 
         # Local processing (zero token cost)
@@ -511,6 +627,7 @@ class AutonomousDiscovery:
         if config.representation.enabled:
             try:
                 from star_pattern.ml.representation_manager import RepresentationManager
+
                 checkpoint_dir = Path(run_manager.run_dir if run_manager else config.output_dir)
                 self._repr_manager = RepresentationManager(
                     config=config.representation,
@@ -525,16 +642,13 @@ class AutonomousDiscovery:
         if config.compositional.enabled:
             try:
                 from star_pattern.discovery.pipeline_presets import get_preset_pipelines
+
                 self._pipeline_genomes = get_preset_pipelines()
             except Exception as e:
                 logger.debug(f"Pipeline genome init failed: {e}")
 
         # LLM components (lazy init)
         self._llm_providers = None
-        self._hypothesis_gen = None
-        self._search_guide = None
-        self._debate = None
-        self._consensus = None
 
         # Strategy components (lazy init)
         self._strategy_advisor = None
@@ -577,6 +691,7 @@ class AutonomousDiscovery:
         self._distributed_bridge = None
         if config.distributed.mode == "master":
             from star_pattern.distributed.bridge import DistributedBridge
+
             self._distributed_bridge = DistributedBridge(config.distributed)
 
         # Graceful shutdown handler
@@ -588,9 +703,7 @@ class AutonomousDiscovery:
 
         self._wide_field_radius = field_radius_arcmin
         self.wide_field_pipeline = WideFieldPipeline(self.config)
-        logger.info(
-            f"Wide-field mode enabled: {field_radius_arcmin}' radius"
-        )
+        logger.info(f"Wide-field mode enabled: {field_radius_arcmin}' radius")
 
     def set_survey(self, config: SurveyConfig) -> None:
         """Enable HEALPix grid survey mode."""
@@ -605,9 +718,7 @@ class AutonomousDiscovery:
             f"{stats['n_total']} pixels ({stats['n_remaining']} remaining)"
         )
 
-    def _fetch_wide_field(
-        self, region: SkyRegion, field_radius: float
-    ) -> RegionData:
+    def _fetch_wide_field(self, region: SkyRegion, field_radius: float) -> RegionData:
         """Fetch wide-field data with tiling and mosaicking."""
         return self.wide_field_pipeline.fetch_wide_field(
             center_ra=region.ra,
@@ -632,12 +743,10 @@ class AutonomousDiscovery:
         if not self.use_llm or self._llm_providers is not None:
             return
 
-        from star_pattern.llm.providers.discovery import ProviderDiscovery
-        from star_pattern.llm.hypothesis import HypothesisGenerator
-        from star_pattern.llm.search_guide import LLMSearchGuide
-        from star_pattern.llm.token_tracker import TokenTracker
         from star_pattern.llm.cache import LLMCache
+        from star_pattern.llm.providers.discovery import ProviderDiscovery
         from star_pattern.llm.strategy import StrategyAdvisor
+        from star_pattern.llm.token_tracker import TokenTracker
 
         discovery = ProviderDiscovery(key_dir=self.config.llm.key_dir)
         self._llm_providers = discovery.discover()
@@ -657,20 +766,12 @@ class AutonomousDiscovery:
                 cache=self._llm_cache,
             )
 
-            # Legacy components kept for escalation
-            self._hypothesis_gen = HypothesisGenerator(
-                self._llm_providers[0], self.config.llm
-            )
-            self._search_guide = LLMSearchGuide(
-                self._llm_providers[0], self.config.llm
-            )
-
-            if len(self._llm_providers) >= 2:
-                from star_pattern.llm.debate import PatternDebate
-                from star_pattern.llm.consensus import PatternConsensus
-
-                self._debate = PatternDebate(self._llm_providers, self.config.llm)
-                self._consensus = PatternConsensus(self._llm_providers, self.config.llm)
+            # HypothesisGenerator, LLMSearchGuide, PatternDebate and
+            # PatternConsensus used to be constructed here and described as
+            # "kept for escalation". Nothing ever read them: no escalation
+            # path existed, so every run paid four constructions and four
+            # imports for objects it then discarded. The classes themselves
+            # remain reachable through `star-pattern analyze --with-debate`.
 
             logger.info(
                 f"LLM initialized: {len(self._llm_providers)} providers, "
@@ -721,7 +822,8 @@ class AutonomousDiscovery:
         # Merge all catalogs for catalog-based detectors
         merged_catalog = None
         if region_data.catalogs:
-            from star_pattern.core.catalog import StarCatalog, CatalogEntry
+            from star_pattern.core.catalog import CatalogEntry, StarCatalog
+
             all_entries: list[CatalogEntry] = []
             for cat in region_data.catalogs.values():
                 all_entries.extend(cat.entries)
@@ -764,7 +866,8 @@ class AutonomousDiscovery:
                                 break
 
                 detection = self.detector.detect(
-                    image, catalog=merged_catalog,
+                    image,
+                    catalog=merged_catalog,
                     temporal_images=temporal_imgs,
                 )
 
@@ -791,6 +894,7 @@ class AutonomousDiscovery:
                 if "rich_features" in detection:
                     try:
                         from star_pattern.detection.feature_fusion import FeatureFusionExtractor
+
                         ff = FeatureFusionExtractor()
                         detection["rich_features"] = ff.extract(detection)
                     except Exception:
@@ -800,9 +904,7 @@ class AutonomousDiscovery:
                 self._last_detection_results[band] = detection
 
                 # Use meta_score when available, fall back to anomaly_score
-                anomaly_score = detection.get(
-                    "meta_score", detection.get("anomaly_score", 0)
-                )
+                anomaly_score = detection.get("meta_score", detection.get("anomaly_score", 0))
 
                 # Only process interesting detections
                 if anomaly_score < interest_threshold:
@@ -865,29 +967,52 @@ class AutonomousDiscovery:
                 # Save overlay images
                 try:
                     image_paths = self._save_finding_images(
-                        image, detection, self.cycle, band,
+                        image,
+                        detection,
+                        self.cycle,
+                        band,
                     )
-                    result.metadata["image_paths"] = [
-                        str(p) for p in image_paths
-                    ]
+                    result.metadata["image_paths"] = [str(p) for p in image_paths]
                 except Exception as e:
                     logger.debug(f"Image saving failed: {e}")
 
-                # Cross-reference
+                # Cross-reference. Record which catalogs actually answered:
+                # zero matches from an unreachable catalog is not evidence
+                # that the position is novel.
                 try:
                     xref = self.cross_ref.cross_reference(
                         region_data.region.ra, region_data.region.dec
                     )
                     result.cross_matches = xref.get("matches", [])
+                    result.metadata["catalog_coverage"] = {
+                        "queried": xref.get("catalogs_queried", []),
+                        "failed": xref.get("catalogs_failed", {}),
+                        "complete": xref.get("coverage_complete", False),
+                    }
+                    if not xref.get("coverage_complete", False):
+                        logger.warning(
+                            "Region (%.4f, %.4f) has incomplete catalog "
+                            "coverage; absence of a match is not evidence "
+                            "of novelty. Unreachable: %s",
+                            region_data.region.ra,
+                            region_data.region.dec,
+                            ", ".join(xref.get("catalogs_failed", {})) or "none",
+                        )
                 except Exception as e:
-                    logger.debug(f"Cross-reference failed: {e}")
+                    logger.warning(f"Cross-reference failed entirely: {e}")
+                    result.metadata["catalog_coverage"] = {
+                        "queried": [],
+                        "failed": {"all": str(e)},
+                        "complete": False,
+                    }
 
                 # Local active learning feedback (no LLM call)
                 if self.active_learner.should_query(result):
                     is_interesting = evaluation["verdict"] == "real"
                     rich_feats = detection.get("rich_features")
                     self.active_learner.add_feedback(
-                        result, is_interesting,
+                        result,
+                        is_interesting,
                         rich_features=rich_feats,
                         detector_scores=classification.get("detector_scores"),
                         notes=f"local: {evaluation['verdict']}",
@@ -895,20 +1020,21 @@ class AutonomousDiscovery:
                     result.metadata["feedback"] = is_interesting
 
                 # Queue for LLM batch review if flagged
-                needs_review = (
-                    classification.get("needs_llm_review", False)
-                    or evaluation.get("needs_llm_review", False)
+                needs_review = classification.get("needs_llm_review", False) or evaluation.get(
+                    "needs_llm_review", False
                 )
                 if needs_review:
-                    self._flagged_for_review.append({
-                        "ra": region_data.region.ra,
-                        "dec": region_data.region.dec,
-                        "classification": classification["classification"],
-                        "confidence": classification["confidence"],
-                        "anomaly_score": anomaly_score,
-                        "verdict": evaluation["verdict"],
-                        "rationale": classification["rationale"],
-                    })
+                    self._flagged_for_review.append(
+                        {
+                            "ra": region_data.region.ra,
+                            "dec": region_data.region.dec,
+                            "classification": classification["classification"],
+                            "confidence": classification["confidence"],
+                            "anomaly_score": anomaly_score,
+                            "verdict": evaluation["verdict"],
+                            "rationale": classification["rationale"],
+                        }
+                    )
 
                 results.append(result)
 
@@ -928,16 +1054,24 @@ class AutonomousDiscovery:
         saved: list[Path] = []
         prefix = f"cycle_{cycle:04d}_{band}"
 
-        from star_pattern.visualization.pattern_overlay import (
-            overlay_sources, overlay_lens_detection, overlay_distribution,
-            overlay_galaxy_features, overlay_classical_detection,
-            overlay_morphology, overlay_sersic_analysis,
-            overlay_wavelet_detection, overlay_kinematic_groups,
-            overlay_transient_detection, overlay_variability,
-            overlay_population_cmd, overlay_temporal_analysis,
-            overlay_anomaly_scores,
-        )
         import matplotlib.pyplot as plt
+
+        from star_pattern.visualization.pattern_overlay import (
+            overlay_anomaly_scores,
+            overlay_classical_detection,
+            overlay_distribution,
+            overlay_galaxy_features,
+            overlay_kinematic_groups,
+            overlay_lens_detection,
+            overlay_morphology,
+            overlay_population_cmd,
+            overlay_sersic_analysis,
+            overlay_sources,
+            overlay_temporal_analysis,
+            overlay_transient_detection,
+            overlay_variability,
+            overlay_wavelet_detection,
+        )
 
         def _save(name: str, fig: object) -> None:
             try:
@@ -961,8 +1095,7 @@ class AutonomousDiscovery:
 
         # Classical overlay
         classical = detection.get("classical", {})
-        if (classical.get("gabor_score", 0) > 0.15
-                or classical.get("arc_score", 0) > 0.15):
+        if classical.get("gabor_score", 0) > 0.15 or classical.get("arc_score", 0) > 0.15:
             _try_save("classical", overlay_classical_detection, image, classical)
 
         # Morphology overlay
@@ -984,8 +1117,12 @@ class AutonomousDiscovery:
         dist = detection.get("distribution", {})
         if dist.get("distribution_score", 0) > 0.2:
             positions = np.array(sources.get("positions", []))
-            _try_save("distribution", overlay_distribution,
-                image, dist, positions if len(positions) > 0 else None,
+            _try_save(
+                "distribution",
+                overlay_distribution,
+                image,
+                dist,
+                positions if len(positions) > 0 else None,
             )
 
         # Wavelet overlay
@@ -1000,26 +1137,22 @@ class AutonomousDiscovery:
 
         # Kinematic overlay (catalog-based)
         kinematic = detection.get("kinematic", {})
-        if (not kinematic.get("no_catalog")
-                and kinematic.get("kinematic_score", 0) > 0.15):
+        if not kinematic.get("no_catalog") and kinematic.get("kinematic_score", 0) > 0.15:
             _try_save("kinematic", overlay_kinematic_groups, kinematic)
 
         # Transient overlay (catalog-based)
         transient = detection.get("transient", {})
-        if (not transient.get("no_catalog")
-                and transient.get("transient_score", 0) > 0.15):
+        if not transient.get("no_catalog") and transient.get("transient_score", 0) > 0.15:
             _try_save("transient", overlay_transient_detection, image, transient)
 
         # Variability overlay (catalog-based)
         variability = detection.get("variability", {})
-        if (not variability.get("no_catalog")
-                and variability.get("variability_score", 0) > 0.15):
+        if not variability.get("no_catalog") and variability.get("variability_score", 0) > 0.15:
             _try_save("variability", overlay_variability, image, variability)
 
         # Population CMD overlay (catalog-based)
         population = detection.get("population", {})
-        if (not population.get("no_catalog")
-                and population.get("population_score", 0) > 0.15):
+        if not population.get("no_catalog") and population.get("population_score", 0) > 0.15:
             _try_save("population", overlay_population_cmd, image, population)
 
         # Temporal diagnostic overlay (multi-panel: reference, diff, SNR, timeline)
@@ -1027,13 +1160,12 @@ class AutonomousDiscovery:
         temporal_diag = None
         if hasattr(self.detector, "temporal"):
             temporal_diag = getattr(self.detector.temporal, "diagnostics", None)
-        if (
-            temporal.get("temporal_score", 0) > 0
-            and temporal_diag is not None
-        ):
+        if temporal.get("temporal_score", 0) > 0 and temporal_diag is not None:
             _try_save(
-                "temporal", overlay_temporal_analysis,
-                temporal_diag, temporal,
+                "temporal",
+                overlay_temporal_analysis,
+                temporal_diag,
+                temporal,
             )
             # Save reference + best-diff as FITS for DS9/Aladin inspection
             try:
@@ -1042,7 +1174,9 @@ class AutonomousDiscovery:
                 ref_img.header = None
                 ref_img.wcs = temporal_diag.get("reference_wcs")
                 ref_img._file_path = None
-                ref_path = Path(self.run_manager.run_dir) / "images" / f"{prefix}_temporal_reference.fits"
+                ref_path = (
+                    Path(self.run_manager.run_dir) / "images" / f"{prefix}_temporal_reference.fits"
+                )
                 ref_path.parent.mkdir(parents=True, exist_ok=True)
                 ref_img.save(str(ref_path))
                 saved.append(ref_path)
@@ -1056,7 +1190,11 @@ class AutonomousDiscovery:
                     diff_img.header = None
                     diff_img.wcs = temporal_diag.get("reference_wcs")
                     diff_img._file_path = None
-                    diff_path = Path(self.run_manager.run_dir) / "images" / f"{prefix}_temporal_diff_best.fits"
+                    diff_path = (
+                        Path(self.run_manager.run_dir)
+                        / "images"
+                        / f"{prefix}_temporal_diff_best.fits"
+                    )
                     diff_img.save(str(diff_path))
                     saved.append(diff_path)
             except Exception as e:
@@ -1081,8 +1219,10 @@ class AutonomousDiscovery:
         elapsed_minutes: float,
     ) -> None:
         """Save an annotated summary image using cached detection results."""
-        from star_pattern.visualization.pattern_overlay import create_annotated_summary
         import matplotlib
+
+        from star_pattern.visualization.pattern_overlay import create_annotated_summary
+
         matplotlib.use("Agg")
         import matplotlib.pyplot as plt
 
@@ -1154,9 +1294,7 @@ class AutonomousDiscovery:
                 n_slaves = self._distributed_bridge.start()
                 logger.info(f"DISTRIBUTED: connected to {n_slaves} slave(s)")
                 if n_slaves == 0:
-                    logger.warning(
-                        "DISTRIBUTED: no slaves connected, falling back to standalone"
-                    )
+                    logger.warning("DISTRIBUTED: no slaves connected, falling back to standalone")
                     self._distributed_bridge = None
             except Exception as e:
                 logger.error(f"DISTRIBUTED: bridge startup failed: {e}")
@@ -1168,8 +1306,7 @@ class AutonomousDiscovery:
         strategy_interval = self.config.llm.strategy_interval
 
         logger.info(
-            f"Starting autonomous discovery "
-            f"(max_cycles={max_cycles}, max_hours={max_hours})"
+            f"Starting autonomous discovery " f"(max_cycles={max_cycles}, max_hours={max_hours})"
         )
 
         while self.cycle < max_cycles and not self._shutdown:
@@ -1181,9 +1318,7 @@ class AutonomousDiscovery:
             self.cycle += 1
             elapsed_min = elapsed / 60
             elapsed_hr = elapsed / 3600
-            findings_rate = (
-                len(self.findings) / elapsed_hr if elapsed_hr > 0.01 else 0
-            )
+            findings_rate = len(self.findings) / elapsed_hr if elapsed_hr > 0.01 else 0
 
             # Progress banner
             logger.info(f"\n{'='*60}")
@@ -1227,16 +1362,13 @@ class AutonomousDiscovery:
             if dispatch_remote:
                 # Dispatch to a slave -- slave does its own fetch + detect
                 logger.info(
-                    f"PHASE: DISPATCHING to slave "
-                    f"at RA={region.ra:.4f} Dec={region.dec:.4f}"
+                    f"PHASE: DISPATCHING to slave " f"at RA={region.ra:.4f} Dec={region.dec:.4f}"
                 )
                 try:
-                    genome_dict = (
-                        self._current_genome.to_dict()
-                        if self._current_genome else {}
-                    )
+                    genome_dict = self._current_genome.to_dict() if self._current_genome else {}
                     self._distributed_bridge.submit_region(
-                        region, self.config,
+                        region,
+                        self.config,
                         genome_dict=genome_dict,
                         include_temporal=include_temporal,
                     )
@@ -1248,13 +1380,8 @@ class AutonomousDiscovery:
                 # Local processing (standalone or local cycle in master mode)
                 # Fetch data (wide-field or standard)
                 try:
-                    if (
-                        self.wide_field_pipeline is not None
-                        and self._wide_field_radius is not None
-                    ):
-                        region_data = self._fetch_wide_field(
-                            region, self._wide_field_radius
-                        )
+                    if self.wide_field_pipeline is not None and self._wide_field_radius is not None:
+                        region_data = self._fetch_wide_field(region, self._wide_field_radius)
                     else:
                         region_data = self.data_pipeline.fetch_region(
                             region,
@@ -1275,7 +1402,8 @@ class AutonomousDiscovery:
                     # most survey pixels will have no data.
                     if self._survey is not None and hasattr(region, "_healpix_pixel"):
                         self._survey.mark_visited(
-                            region._healpix_pixel, findings_count=0,  # type: ignore[attr-defined]
+                            region._healpix_pixel,
+                            findings_count=0,  # type: ignore[attr-defined]
                         )
                         self.cycle -= 1  # Don't count empty survey pixels
                         logger.info(
@@ -1303,7 +1431,9 @@ class AutonomousDiscovery:
 
                 # Always save an annotated summary for every region
                 self._save_region_summary(
-                    region_data, new_findings, elapsed_min,
+                    region_data,
+                    new_findings,
+                    elapsed_min,
                 )
 
                 if new_findings:
@@ -1358,16 +1488,15 @@ class AutonomousDiscovery:
                 self._evolve_parameters()
 
                 # Push updated config to slaves after evolution
-                if (
-                    self._distributed_bridge is not None
-                    and self._current_genome is not None
-                ):
+                if self._distributed_bridge is not None and self._current_genome is not None:
                     try:
                         from dataclasses import asdict
+
                         det_config = asdict(self.config.detection)
                         genome_dict = self._current_genome.to_dict()
                         self._distributed_bridge.push_config_update(
-                            det_config, genome_dict,
+                            det_config,
+                            genome_dict,
                         )
                         logger.info("DISTRIBUTED: pushed config update to slaves")
                     except Exception as e:
@@ -1430,11 +1559,10 @@ class AutonomousDiscovery:
             self._generate_report()
         except Exception as e:
             import traceback
+
             logger.warning(f"Report generation failed: {e}\n{traceback.format_exc()}")
 
-        logger.info(
-            f"\nDiscovery complete: {len(self.findings)} findings in {self.cycle} cycles"
-        )
+        logger.info(f"\nDiscovery complete: {len(self.findings)} findings in {self.cycle} cycles")
         return self.findings
 
     def _run_strategy_session(self) -> None:
@@ -1454,11 +1582,7 @@ class AutonomousDiscovery:
 
         # Build compact summary
         findings_summary = self._summarize_recent_findings()
-        genome_config = (
-            self._current_genome.to_detection_config()
-            if self._current_genome
-            else {}
-        )
+        genome_config = self._current_genome.to_detection_config() if self._current_genome else {}
         al_stats = self.active_learner.get_strategy_summary()
         evo_history = self._evolution_history[-5:]  # Last 5 entries
 
@@ -1483,15 +1607,11 @@ class AutonomousDiscovery:
         # Batch review flagged findings
         if self._flagged_for_review:
             try:
-                reviews = self._strategy_advisor.review_flagged_findings(
-                    self._flagged_for_review
-                )
+                reviews = self._strategy_advisor.review_flagged_findings(self._flagged_for_review)
                 for i, review in enumerate(reviews):
                     if i < len(self._flagged_for_review):
                         self._flagged_for_review[i].update(review)
-                logger.info(
-                    f"Batch reviewed {len(reviews)} flagged findings"
-                )
+                logger.info(f"Batch reviewed {len(reviews)} flagged findings")
             except Exception as e:
                 logger.warning(f"Batch review failed: {e}")
             self._flagged_for_review = []
@@ -1499,10 +1619,7 @@ class AutonomousDiscovery:
         # Track outcome for next session
         self._last_strategy_outcome = {
             "n_total": len(self.findings),
-            "n_high_confidence": sum(
-                1 for f in self.findings[-25:]
-                if f.anomaly_score > 0.5
-            ),
+            "n_high_confidence": sum(1 for f in self.findings[-25:] if f.anomaly_score > 0.5),
             "interesting_rate": al_stats.get("interesting_rate", 0),
         }
 
@@ -1523,9 +1640,18 @@ class AutonomousDiscovery:
         # Apply detector enable/disable gates to current genome
         if self._current_genome is not None:
             _VALID = {
-                "classical", "morphology", "anomaly", "lens", "distribution",
-                "galaxy", "kinematic", "transient", "sersic", "wavelet",
-                "population", "variability",
+                "classical",
+                "morphology",
+                "anomaly",
+                "lens",
+                "distribution",
+                "galaxy",
+                "kinematic",
+                "transient",
+                "sersic",
+                "wavelet",
+                "population",
+                "variability",
             }
             changed = []
             for det_name in strategy.disable_detectors:
@@ -1577,13 +1703,27 @@ class AutonomousDiscovery:
 
         # Types that the system has never detected
         all_possible_types = {
-            "lens_arc", "lens_ring", "overdensity", "multiscale_object",
-            "tidal_feature", "merger", "classical_arc", "sersic_residual",
-            "comoving_group", "stellar_stream", "runaway_star",
-            "flux_outlier", "variable_star", "periodic_variable",
-            "blue_straggler", "red_giant",
-            "temporal_new_source", "temporal_disappeared",
-            "temporal_brightening", "temporal_fading", "temporal_moving",
+            "lens_arc",
+            "lens_ring",
+            "overdensity",
+            "multiscale_object",
+            "tidal_feature",
+            "merger",
+            "classical_arc",
+            "sersic_residual",
+            "comoving_group",
+            "stellar_stream",
+            "runaway_star",
+            "flux_outlier",
+            "variable_star",
+            "periodic_variable",
+            "blue_straggler",
+            "red_giant",
+            "temporal_new_source",
+            "temporal_disappeared",
+            "temporal_brightening",
+            "temporal_fading",
+            "temporal_moving",
         }
         never_found = sorted(all_possible_types - all_found_types)
 
@@ -1667,21 +1807,18 @@ class AutonomousDiscovery:
         self._current_genome = best
         self.config.detection = new_config
 
-        self._evolution_history.append({
-            "cycle": self.cycle,
-            "fitness": best.fitness,
-            "components": best.fitness_components,
-        })
+        self._evolution_history.append(
+            {
+                "cycle": self.cycle,
+                "fitness": best.fitness,
+                "components": best.fitness_components,
+            }
+        )
 
         # Store per-generation history for evolution summary
-        self._full_generation_histories.append(
-            engine.history if engine.history else []
-        )
+        self._full_generation_histories.append(engine.history if engine.history else [])
 
-        logger.info(
-            f"Evolution complete in {evo_elapsed:.1f}s: "
-            f"fitness={best.fitness:.4f}"
-        )
+        logger.info(f"Evolution complete in {evo_elapsed:.1f}s: " f"fitness={best.fitness:.4f}")
         self.run_manager.save_result(
             f"evolution_cycle_{self.cycle:04d}",
             {"genome": best.to_dict(), "history": engine.history},
@@ -1706,10 +1843,12 @@ class AutonomousDiscovery:
         # Save evolution summary image
         fig = None
         try:
+            import matplotlib
+
             from star_pattern.visualization.pattern_overlay import (
                 create_evolution_summary,
             )
-            import matplotlib
+
             matplotlib.use("Agg")
             import matplotlib.pyplot as plt
 
@@ -1718,22 +1857,22 @@ class AutonomousDiscovery:
                 evolution_history=self._evolution_history,
             )
             self.run_manager.save_image(
-                f"evolution_summary_cycle_{self.cycle:04d}.png", fig,
+                f"evolution_summary_cycle_{self.cycle:04d}.png",
+                fig,
             )
         except Exception as e:
             logger.debug(f"Evolution summary image failed: {e}")
         finally:
             try:
                 import matplotlib.pyplot as plt
+
                 if fig is not None:
                     plt.close(fig)
                 plt.close("all")
             except Exception:
                 pass
 
-    def _evolve_pipeline_genomes(
-        self, images: list[FITSImage]
-    ) -> None:
+    def _evolve_pipeline_genomes(self, images: list[FITSImage]) -> None:
         """Evolve the compositional pipeline genome population.
 
         Evaluates each pipeline genome on the image buffer, then applies
@@ -1794,14 +1933,20 @@ class AutonomousDiscovery:
                 child1, child2 = parent1.crossover(parent2)
             else:
                 child1 = PipelineGenome(
-                    [OperationSpec(name=op.name, params=dict(op.params))
-                     for op in parent1.operations],
-                    parent1.score_method, rng,
+                    [
+                        OperationSpec(name=op.name, params=dict(op.params))
+                        for op in parent1.operations
+                    ],
+                    parent1.score_method,
+                    rng,
                 )
                 child2 = PipelineGenome(
-                    [OperationSpec(name=op.name, params=dict(op.params))
-                     for op in parent2.operations],
-                    parent2.score_method, rng,
+                    [
+                        OperationSpec(name=op.name, params=dict(op.params))
+                        for op in parent2.operations
+                    ],
+                    parent2.score_method,
+                    rng,
                 )
 
             new_pop.append(child1.mutate(0.2))
@@ -1828,7 +1973,7 @@ class AutonomousDiscovery:
         if self._token_tracker:
             metadata["token_usage"] = self._token_tracker.summary()
 
-        images = [getattr(f, '_fits_image', None) for f in self.findings]
+        images = [getattr(f, "_fits_image", None) for f in self.findings]
         paths = report.generate_full_report(self.findings, metadata, images=images)
 
         logger.info(f"Reports saved to {self.run_manager.reports_dir}")

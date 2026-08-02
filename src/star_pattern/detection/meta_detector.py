@@ -58,9 +58,7 @@ class MetaDetector:
     def model_type(self) -> str:
         return self._model_type
 
-    def score(
-        self, features: np.ndarray, linear_score: float
-    ) -> dict[str, Any]:
+    def score(self, features: np.ndarray, linear_score: float) -> dict[str, Any]:
         """Score a detection using the best available model.
 
         Args:
@@ -125,9 +123,7 @@ class MetaDetector:
             prob = torch.sigmoid(logit).item()
         return prob
 
-    def add_sample(
-        self, features: np.ndarray, is_interesting: bool
-    ) -> None:
+    def add_sample(self, features: np.ndarray, is_interesting: bool) -> None:
         """Record a labeled sample for future retraining.
 
         Args:
@@ -152,6 +148,7 @@ class MetaDetector:
 
         # Fit scaler
         from sklearn.preprocessing import StandardScaler
+
         self._scaler = StandardScaler()
         X_scaled = self._scaler.fit_transform(X)
 
@@ -185,9 +182,7 @@ class MetaDetector:
         result["model_type"] = "linear"
         return result
 
-    def _train_gbm(
-        self, X_scaled: np.ndarray, y: np.ndarray
-    ) -> dict[str, float]:
+    def _train_gbm(self, X_scaled: np.ndarray, y: np.ndarray) -> dict[str, float]:
         """Train gradient boosting classifier."""
         from sklearn.ensemble import GradientBoostingClassifier
         from sklearn.model_selection import cross_val_score
@@ -206,7 +201,10 @@ class MetaDetector:
         if len(y) >= 20:
             try:
                 cv_scores = cross_val_score(
-                    model, X_scaled, y.astype(int), cv=min(5, len(y) // 5),
+                    model,
+                    X_scaled,
+                    y.astype(int),
+                    cv=min(5, len(y) // 5),
                     scoring="roc_auc",
                 )
                 cv_score = float(np.mean(cv_scores))
@@ -215,9 +213,7 @@ class MetaDetector:
 
         return {"cv_auc": cv_score}
 
-    def _train_nn(
-        self, X_scaled: np.ndarray, y: np.ndarray
-    ) -> dict[str, float]:
+    def _train_nn(self, X_scaled: np.ndarray, y: np.ndarray) -> dict[str, float]:
         """Train small MLP classifier with train/val split and early stopping."""
         import torch
         import torch.nn as nn
@@ -229,13 +225,19 @@ class MetaDetector:
         # 80/20 train/validation split (stratified to preserve class balance)
         try:
             X_train, X_val, y_train, y_val = train_test_split(
-                X_scaled, y, test_size=0.2, random_state=42,
+                X_scaled,
+                y,
+                test_size=0.2,
+                random_state=42,
                 stratify=y.astype(int),
             )
         except ValueError:
             # Stratification fails if a class has < 2 samples
             X_train, X_val, y_train, y_val = train_test_split(
-                X_scaled, y, test_size=0.2, random_state=42,
+                X_scaled,
+                y,
+                test_size=0.2,
+                random_state=42,
             )
 
         # Build MLP
@@ -310,15 +312,11 @@ class MetaDetector:
             "epochs_trained": len(train_losses),
         }
 
-    def _compute_feature_importance(
-        self, X_scaled: np.ndarray, y: np.ndarray
-    ) -> None:
+    def _compute_feature_importance(self, X_scaled: np.ndarray, y: np.ndarray) -> None:
         """Compute feature importance using the GBM model or permutation."""
         if self._gbm_model is not None:
             importances = self._gbm_model.feature_importances_
-            self._feature_importance = {
-                str(i): float(v) for i, v in enumerate(importances)
-            }
+            self._feature_importance = {str(i): float(v) for i, v in enumerate(importances)}
 
     def get_feature_importance(self) -> dict[str, float]:
         """Return feature importance dict (index -> importance)."""
@@ -354,6 +352,7 @@ class MetaDetector:
         if self._gbm_model is not None:
             try:
                 import joblib
+
                 joblib.dump(self._gbm_model, str(path / "gbm_model.joblib"))
                 if self._scaler is not None:
                     joblib.dump(self._scaler, str(path / "scaler.joblib"))
@@ -364,6 +363,7 @@ class MetaDetector:
         if self._nn_model is not None:
             try:
                 import torch
+
                 torch.save(self._nn_model.state_dict(), str(path / "nn_model.pt"))
             except Exception as e:
                 logger.debug(f"Failed to save NN model: {e}")
@@ -398,6 +398,7 @@ class MetaDetector:
         if gbm_path.exists():
             try:
                 import joblib
+
                 self._gbm_model = joblib.load(str(gbm_path))
                 if scaler_path.exists():
                     self._scaler = joblib.load(str(scaler_path))
@@ -405,6 +406,5 @@ class MetaDetector:
                 logger.debug("joblib not available, cannot load GBM model")
 
         logger.info(
-            f"Meta-detector state loaded: {self._model_type} "
-            f"({self.n_samples} samples)"
+            f"Meta-detector state loaded: {self._model_type} " f"({self.n_samples} samples)"
         )

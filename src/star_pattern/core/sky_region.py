@@ -8,13 +8,13 @@ from typing import Any
 import numpy as np
 
 try:
-    from astropy.coordinates import SkyCoord, Galactic
     import astropy.units as u
+    from astropy.coordinates import Galactic, SkyCoord  # noqa: F401 - availability probe
 except ImportError as e:
     raise ImportError("astropy is required") from e
 
-from star_pattern.core.fits_handler import FITSImage
 from star_pattern.core.catalog import StarCatalog
+from star_pattern.core.fits_handler import FITSImage
 
 
 @dataclass
@@ -22,9 +22,9 @@ class EpochImage:
     """A single-epoch image with timestamp and filter metadata."""
 
     image: FITSImage
-    mjd: float          # Modified Julian Date
-    band: str           # Filter (g, r, i)
-    source: str = ""    # ztf, mast
+    mjd: float  # Modified Julian Date
+    band: str  # Filter (g, r, i)
+    source: str = ""  # ztf, mast
     metadata: dict = field(default_factory=dict)
 
 
@@ -90,7 +90,9 @@ class RegionData:
     images: dict[str, FITSImage] = field(default_factory=dict)  # band -> image
     catalogs: dict[str, StarCatalog] = field(default_factory=dict)  # source -> catalog
     metadata: dict[str, Any] = field(default_factory=dict)
-    temporal_images: dict[str, list[EpochImage]] = field(default_factory=dict)  # band -> epochs sorted by MJD
+    temporal_images: dict[str, list[EpochImage]] = field(
+        default_factory=dict
+    )  # band -> epochs sorted by MJD
 
     @property
     def primary_image(self) -> FITSImage | None:

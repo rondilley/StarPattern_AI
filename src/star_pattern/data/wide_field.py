@@ -2,11 +2,9 @@
 
 from __future__ import annotations
 
-from typing import Any
-
 from star_pattern.core.config import PipelineConfig
 from star_pattern.core.fits_handler import FITSImage
-from star_pattern.core.sky_region import SkyRegion, RegionData
+from star_pattern.core.sky_region import RegionData, SkyRegion
 from star_pattern.core.tiling import TileGrid
 from star_pattern.data.mosaic import Mosaicker
 from star_pattern.data.pipeline import DataPipeline
@@ -62,24 +60,16 @@ class WideFieldPipeline:
             max_tiles=self.wf.max_tiles,
         )
 
-        logger.info(
-            f"Wide-field: {len(grid)} tiles for "
-            f"{field_radius_arcmin}' field"
-        )
+        logger.info(f"Wide-field: {len(grid)} tiles for " f"{field_radius_arcmin}' field")
 
         # Fetch all tiles
         all_images: dict[str, list[FITSImage]] = {}
         all_catalogs: dict[str, StarCatalog] = {}
 
         for i, tile in enumerate(grid.tiles):
-            logger.info(
-                f"  Tile {i + 1}/{len(grid)}: "
-                f"({tile.ra:.3f}, {tile.dec:.3f})"
-            )
+            logger.info(f"  Tile {i + 1}/{len(grid)}: " f"({tile.ra:.3f}, {tile.dec:.3f})")
             try:
-                tile_data = self.data_pipeline.fetch_region(
-                    tile, bands=bands
-                )
+                tile_data = self.data_pipeline.fetch_region(tile, bands=bands)
                 for band, img in tile_data.images.items():
                     all_images.setdefault(band, []).append(img)
                 for src, cat in tile_data.catalogs.items():
@@ -91,9 +81,7 @@ class WideFieldPipeline:
                 logger.warning(f"  Tile fetch failed: {e}")
 
         # Mosaic each band
-        mosaic_region = SkyRegion(
-            ra=center_ra, dec=center_dec, radius=field_radius_arcmin
-        )
+        mosaic_region = SkyRegion(ra=center_ra, dec=center_dec, radius=field_radius_arcmin)
         result = RegionData(region=mosaic_region)
 
         for band, images in all_images.items():
@@ -104,9 +92,7 @@ class WideFieldPipeline:
                     result.images[band] = images[0]
                 else:
                     result.images[band] = self.mosaicker.mosaic(images)
-                logger.info(
-                    f"  Mosaic {band}: {result.images[band].shape}"
-                )
+                logger.info(f"  Mosaic {band}: {result.images[band].shape}")
             except Exception as e:
                 logger.warning(f"  Mosaic failed for {band}: {e}")
                 # Fall back to first image

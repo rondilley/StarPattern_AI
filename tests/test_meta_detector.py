@@ -99,9 +99,7 @@ class TestMetaDetector:
 
     def test_gbm_scoring_after_retrain(self):
         """After GBM retrain, scoring uses GBM model."""
-        config = MetaDetectorConfig(
-            blend_weight=1.0, min_samples_gbm=50, min_samples_nn=10000
-        )
+        config = MetaDetectorConfig(blend_weight=1.0, min_samples_gbm=50, min_samples_nn=10000)
         meta = MetaDetector(config)
 
         rng = np.random.default_rng(42)

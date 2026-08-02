@@ -105,11 +105,7 @@ class StarCatalog:
     def filter_by_magnitude(self, min_mag: float = -30, max_mag: float = 30) -> StarCatalog:
         """Return entries within a magnitude range."""
         return StarCatalog(
-            entries=[
-                e
-                for e in self.entries
-                if e.mag is not None and min_mag <= e.mag <= max_mag
-            ],
+            entries=[e for e in self.entries if e.mag is not None and min_mag <= e.mag <= max_mag],
             source=self.source,
             metadata=self.metadata,
         )

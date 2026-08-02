@@ -3,8 +3,8 @@
 import numpy as np
 import pytest
 
-from star_pattern.detection.local_evaluator import LocalEvaluator
 from star_pattern.core.fits_handler import FITSImage
+from star_pattern.detection.local_evaluator import LocalEvaluator
 
 
 def _make_image(peak_value: float = 1000, bg_level: float = 100, bg_noise: float = 10):
@@ -153,9 +153,9 @@ class TestLocalEvaluator:
     def test_n_agreeing_detectors(self):
         """Agreeing detector count is correct."""
         detection = {
-            "lens": {"lens_score": 0.5},       # > 0.3
+            "lens": {"lens_score": 0.5},  # > 0.3
             "morphology": {"morphology_score": 0.4},  # > 0.3
-            "galaxy": {"galaxy_score": 0.1},    # < 0.3
+            "galaxy": {"galaxy_score": 0.1},  # < 0.3
             "anomaly_score": 0.5,
         }
 

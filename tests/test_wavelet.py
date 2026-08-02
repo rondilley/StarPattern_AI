@@ -1,12 +1,11 @@
 """Tests for wavelet multi-scale analysis."""
 
 import numpy as np
-import pytest
 
 from star_pattern.detection.wavelet import (
     WaveletAnalyzer,
-    atrous_decompose,
     _atrous_convolve_2d,
+    atrous_decompose,
 )
 
 
@@ -84,7 +83,7 @@ class TestAtrousDecompose:
 
         details, _ = atrous_decompose(data, n_scales=4)
 
-        energies = [np.sum(d ** 2) for d in details]
+        energies = [np.sum(d**2) for d in details]
         # Fine scale (scale 0) should have the most energy
         assert energies[0] > energies[2]
         assert energies[0] > energies[3]
@@ -93,11 +92,11 @@ class TestAtrousDecompose:
         """Extended emission should have more energy at coarse scales."""
         y, x = np.mgrid[:128, :128]
         # Large Gaussian (sigma=20)
-        data = 100 * np.exp(-((x - 64) ** 2 + (y - 64) ** 2) / (2 * 20 ** 2))
+        data = 100 * np.exp(-((x - 64) ** 2 + (y - 64) ** 2) / (2 * 20**2))
 
         details, _ = atrous_decompose(data, n_scales=5)
 
-        energies = [np.sum(d ** 2) for d in details]
+        energies = [np.sum(d**2) for d in details]
         # Coarser scales should dominate for extended sources
         coarse_energy = sum(energies[2:])
         fine_energy = sum(energies[:2])
@@ -138,7 +137,7 @@ class TestWaveletAnalyzer:
         # Add several bright sources
         for sy, sx in [(40, 50), (60, 80), (90, 30), (64, 64)]:
             y, x = np.mgrid[:128, :128]
-            data += 500 * np.exp(-((x - sx) ** 2 + (y - sy) ** 2) / (2 * 2 ** 2))
+            data += 500 * np.exp(-((x - sx) ** 2 + (y - sy) ** 2) / (2 * 2**2))
 
         analyzer = WaveletAnalyzer(n_scales=5, significance_threshold=3.0)
         result = analyzer.analyze(data)
@@ -161,7 +160,7 @@ class TestWaveletAnalyzer:
         data = rng.normal(100, 3, (128, 128)).astype(np.float32)
         # Add an extended source (galaxy-like)
         y, x = np.mgrid[:128, :128]
-        data += 300 * np.exp(-((x - 64) ** 2 + (y - 64) ** 2) / (2 * 10 ** 2))
+        data += 300 * np.exp(-((x - 64) ** 2 + (y - 64) ** 2) / (2 * 10**2))
 
         analyzer = WaveletAnalyzer(n_scales=5, significance_threshold=2.5)
         result = analyzer.analyze(data)

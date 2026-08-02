@@ -1,14 +1,15 @@
 """Tests for LLM integration using real providers from *.key.txt files."""
 
 import pytest
-from pathlib import Path
 
 from star_pattern.core.config import LLMConfig
-from star_pattern.llm.providers.base import LLMProvider
-from star_pattern.llm.hypothesis import HypothesisGenerator
-from star_pattern.llm.debate import PatternDebate
 from star_pattern.llm.consensus import PatternConsensus
+from star_pattern.llm.debate import PatternDebate
+from star_pattern.llm.hypothesis import HypothesisGenerator
 from star_pattern.llm.providers.discovery import ProviderDiscovery
+
+# Requires live external services; excluded from the offline CI run.
+pytestmark = pytest.mark.llm
 
 
 @pytest.fixture

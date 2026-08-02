@@ -8,8 +8,8 @@ from typing import Any
 import numpy as np
 
 from star_pattern.core.config import LLMConfig
+from star_pattern.llm.prompts import CONSENSUS_PROMPT, SYSTEM_ASTRONOMER
 from star_pattern.llm.providers.base import LLMProvider
-from star_pattern.llm.prompts import SYSTEM_ASTRONOMER, CONSENSUS_PROMPT
 from star_pattern.utils.logging import get_logger
 
 logger = get_logger("llm.consensus")
@@ -115,8 +115,7 @@ class PatternConsensus:
         }
 
         logger.info(
-            f"Consensus: {mean_rating:.1f}/10 ({consensus_category}), "
-            f"agreement={agreement:.2f}"
+            f"Consensus: {mean_rating:.1f}/10 ({consensus_category}), " f"agreement={agreement:.2f}"
         )
         return result
 

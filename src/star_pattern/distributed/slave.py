@@ -3,24 +3,21 @@
 from __future__ import annotations
 
 import asyncio
-import platform
 import os
+import platform
 import time
 import traceback
-from dataclasses import asdict
 from typing import Any
 
-from star_pattern.core.config import PipelineConfig, DetectionConfig, DataConfig
+from star_pattern.core.config import DetectionConfig, PipelineConfig
 from star_pattern.core.sky_region import SkyRegion
 from star_pattern.data.pipeline import DataPipeline
 from star_pattern.detection.ensemble import EnsembleDetector
 from star_pattern.detection.local_classifier import LocalClassifier
 from star_pattern.detection.local_evaluator import LocalEvaluator
 from star_pattern.distributed.protocol import (
-    PROTOCOL_VERSION,
-    WorkUnit,
     WorkResult,
-    make_auth,
+    WorkUnit,
     recv_message,
     send_message,
     verify_auth,
@@ -111,11 +108,14 @@ class SlaveServer:
 
             # Send ack
             n_workers = self.config.distributed.max_concurrent_per_slave
-            await send_message(writer, {
-                "type": "handshake_ack",
-                "slave_id": self.slave_id,
-                "n_workers": n_workers,
-            })
+            await send_message(
+                writer,
+                {
+                    "type": "handshake_ack",
+                    "slave_id": self.slave_id,
+                    "n_workers": n_workers,
+                },
+            )
             logger.info(f"Handshake complete with {peer}, workers={n_workers}")
 
             # Message loop
@@ -130,9 +130,7 @@ class SlaveServer:
 
                 if msg_type == "work_dispatch":
                     unit = WorkUnit.from_dict(msg.get("payload", {}))
-                    task = asyncio.create_task(
-                        self._execute_and_send(unit, writer)
-                    )
+                    task = asyncio.create_task(self._execute_and_send(unit, writer))
                     self._active_tasks.add(task)
                     task.add_done_callback(self._active_tasks.discard)
 
@@ -143,10 +141,13 @@ class SlaveServer:
                         self._ensure_detector(det_config)
 
                 elif msg_type == "heartbeat":
-                    await send_message(writer, {
-                        "type": "heartbeat",
-                        "timestamp": time.time(),
-                    })
+                    await send_message(
+                        writer,
+                        {
+                            "type": "heartbeat",
+                            "timestamp": time.time(),
+                        },
+                    )
 
                 elif msg_type == "shutdown":
                     logger.info("Shutdown command received")
@@ -174,23 +175,31 @@ class SlaveServer:
         start = time.time()
         try:
             result = await asyncio.get_event_loop().run_in_executor(
-                None, self._execute_work, unit,
+                None,
+                self._execute_work,
+                unit,
             )
             result.elapsed_seconds = time.time() - start
-            await send_message(writer, {
-                "type": "work_result",
-                "payload": result.to_dict(),
-            })
+            await send_message(
+                writer,
+                {
+                    "type": "work_result",
+                    "payload": result.to_dict(),
+                },
+            )
         except Exception as e:
             logger.error(f"Work {unit.work_id} failed: {e}")
-            await send_message(writer, {
-                "type": "work_error",
-                "payload": {
-                    "work_id": unit.work_id,
-                    "error": str(e),
-                    "traceback": traceback.format_exc(),
+            await send_message(
+                writer,
+                {
+                    "type": "work_error",
+                    "payload": {
+                        "work_id": unit.work_id,
+                        "error": str(e),
+                        "traceback": traceback.format_exc(),
+                    },
                 },
-            })
+            )
 
     def _execute_work(self, unit: WorkUnit) -> WorkResult:
         """Execute a work unit synchronously (runs in thread pool)."""
@@ -215,6 +224,7 @@ class SlaveServer:
         temporal_config = None
         if unit.include_temporal and unit.temporal_config:
             from star_pattern.core.config import TemporalConfig
+
             temporal_config = TemporalConfig(
                 max_epochs=unit.temporal_config.get("max_epochs", 10),
                 min_baseline_days=unit.temporal_config.get("min_baseline_days", 1.0),
@@ -242,7 +252,8 @@ class SlaveServer:
         # Merge catalogs for catalog-based detectors
         merged_catalog = None
         if region_data.catalogs:
-            from star_pattern.core.catalog import StarCatalog, CatalogEntry
+            from star_pattern.core.catalog import CatalogEntry, StarCatalog
+
             all_entries: list[CatalogEntry] = []
             for cat in region_data.catalogs.values():
                 all_entries.extend(cat.entries)
@@ -266,13 +277,12 @@ class SlaveServer:
                                 break
 
                 detection = self._detector.detect(
-                    image, catalog=merged_catalog,
+                    image,
+                    catalog=merged_catalog,
                     temporal_images=temporal_imgs,
                 )
 
-                anomaly_score = detection.get(
-                    "meta_score", detection.get("anomaly_score", 0)
-                )
+                anomaly_score = detection.get("meta_score", detection.get("anomaly_score", 0))
 
                 classification = self.local_classifier.classify(detection)
                 evaluation = self.local_evaluator.evaluate(detection, image)
@@ -294,13 +304,15 @@ class SlaveServer:
                 pattern_results.append(result.to_dict())
 
                 # Compact detection summary (avoid sending full detection dict)
-                detection_summaries.append({
-                    "band": band,
-                    "anomaly_score": anomaly_score,
-                    "classification": classification["classification"],
-                    "verdict": evaluation["verdict"],
-                    "n_anomalies": len(result.anomalies),
-                })
+                detection_summaries.append(
+                    {
+                        "band": band,
+                        "anomaly_score": anomaly_score,
+                        "classification": classification["classification"],
+                        "verdict": evaluation["verdict"],
+                        "n_anomalies": len(result.anomalies),
+                    }
+                )
 
             except Exception as e:
                 logger.warning(f"Detection failed on {band}: {e}")

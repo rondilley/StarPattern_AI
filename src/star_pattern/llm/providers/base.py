@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Any, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from star_pattern.llm.token_tracker import TokenTracker
     from star_pattern.llm.cache import LLMCache
+    from star_pattern.llm.token_tracker import TokenTracker
 
 
 class LLMProvider(ABC):
@@ -143,8 +143,12 @@ class LLMProvider(ABC):
 
         # Cache miss: generate with tracking
         response = self.generate_tracked(
-            prompt, system_prompt, max_tokens, temperature,
-            tracker=tracker, purpose=purpose,
+            prompt,
+            system_prompt,
+            max_tokens,
+            temperature,
+            tracker=tracker,
+            purpose=purpose,
         )
 
         # Store in cache

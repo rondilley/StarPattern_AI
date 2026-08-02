@@ -1,9 +1,13 @@
-"""DetectionGenome: evolvable detection parameters (~22 params)."""
+"""DetectionGenome: evolvable detection parameters (72 genes).
+
+The gene count is GENE_DEFINITIONS, not a constant repeated in prose:
+48 detector parameters and ensemble weights, 12 enable gates, 6 temporal
+genes, and 6 meta/representation/compositional genes.
+"""
 
 from __future__ import annotations
 
-import copy
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
@@ -112,7 +116,9 @@ GENE_DEFINITIONS: list[GeneRange] = [
     GeneRange("enable_population", 0, 1, "bool", "Enable population detector"),
     GeneRange("enable_variability", 0, 1, "bool", "Enable variability detector"),
     # Meta-detector (Phase 2)
-    GeneRange("meta_blend_weight", 0.0, 1.0, "float", "Meta-detector blend weight (0=linear, 1=learned)"),
+    GeneRange(
+        "meta_blend_weight", 0.0, 1.0, "float", "Meta-detector blend weight (0=linear, 1=learned)"
+    ),
     GeneRange("meta_gbm_depth", 2, 6, "int", "Meta-detector GBM max depth"),
     GeneRange("meta_gbm_estimators", 50, 300, "int", "Meta-detector GBM n_estimators"),
     # Representation learning (Phase 3)
@@ -133,7 +139,9 @@ GENE_DEFINITIONS: list[GeneRange] = [
 class DetectionGenome:
     """An evolvable set of detection parameters.
 
-    Each genome is a vector of ~22 floats, each mapped to a detection parameter.
+    Each genome is a vector of len(GENE_DEFINITIONS) floats, each mapped
+    to a detection parameter. Loaders tolerate shorter genomes from
+    earlier runs by falling back to the gene's default.
     """
 
     def __init__(
@@ -184,14 +192,31 @@ class DetectionGenome:
         # Note: "lens" has an enable gene but no weight gene -- its score
         # contributes through the anomaly detector and ensemble scoring.
         _WEIGHT_NAMES = [
-            "classical", "morphology", "anomaly", "distribution",
-            "galaxy", "kinematic", "transient", "sersic", "wavelet",
-            "population", "variability",
+            "classical",
+            "morphology",
+            "anomaly",
+            "distribution",
+            "galaxy",
+            "kinematic",
+            "transient",
+            "sersic",
+            "wavelet",
+            "population",
+            "variability",
         ]
         _ENABLE_NAMES = [
-            "classical", "morphology", "anomaly", "lens", "distribution",
-            "galaxy", "kinematic", "transient", "sersic", "wavelet",
-            "population", "variability",
+            "classical",
+            "morphology",
+            "anomaly",
+            "lens",
+            "distribution",
+            "galaxy",
+            "kinematic",
+            "transient",
+            "sersic",
+            "wavelet",
+            "population",
+            "variability",
         ]
         enabled_detectors = {}
         for name in _ENABLE_NAMES:
@@ -275,8 +300,7 @@ class DetectionGenome:
                 "period_max": g("variability_period_max"),
             },
             "ensemble_weights": {
-                name: raw_weights[name] / w_sum
-                for name in list(_WEIGHT_NAMES) + ["temporal"]
+                name: raw_weights[name] / w_sum for name in list(_WEIGHT_NAMES) + ["temporal"]
             },
             "enabled_detectors": enabled_detectors,
             "meta": {

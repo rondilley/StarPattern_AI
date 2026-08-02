@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
@@ -10,6 +11,19 @@ from scipy import ndimage
 from star_pattern.utils.logging import get_logger
 
 logger = get_logger("detection.lens")
+
+
+@dataclass(frozen=True)
+class LensRadii:
+    """Search radii in pixels for one image.
+
+    Frozen and passed by argument so a per-image pixel scale cannot leak
+    into the next image through shared detector state.
+    """
+
+    ring_min: int
+    ring_max: int
+    arc_min_length: int
 
 
 class LensDetector:
@@ -29,6 +43,20 @@ class LensDetector:
         self.ring_max_radius = ring_max_radius
         self.snr_threshold = snr_threshold
 
+    def _radii_for(self, pixel_scale_arcsec: float | None) -> LensRadii:
+        """Scale the configured radii to pixels for one image."""
+        if pixel_scale_arcsec and pixel_scale_arcsec > 0:
+            return LensRadii(
+                ring_min=max(3, int(3.0 / pixel_scale_arcsec)),
+                ring_max=max(10, int(25.0 / pixel_scale_arcsec)),
+                arc_min_length=max(5, int(5.0 / pixel_scale_arcsec)),
+            )
+        return LensRadii(
+            ring_min=self.ring_min_radius,
+            ring_max=self.ring_max_radius,
+            arc_min_length=self.arc_min_length,
+        )
+
     def detect(
         self,
         image: np.ndarray,
@@ -44,11 +72,14 @@ class LensDetector:
         Returns:
             Dict with arc candidates, ring candidates, and overall lens score.
         """
-        # Adapt radii from physical arcsec to pixels if scale is known
-        if pixel_scale_arcsec and pixel_scale_arcsec > 0:
-            self.ring_min_radius = max(3, int(3.0 / pixel_scale_arcsec))
-            self.ring_max_radius = max(10, int(25.0 / pixel_scale_arcsec))
-            self.arc_min_length = max(5, int(5.0 / pixel_scale_arcsec))
+        # Adapt radii from physical arcsec to pixels if scale is known.
+        # These are per-image values held in a local, NOT written back to
+        # self: one detector instance is built once and reused for every
+        # image, so assigning to self here would let an image with a WCS
+        # permanently redefine the radii, and a later image without one
+        # would silently inherit them. That made detection depend on the
+        # order images happened to arrive in.
+        radii = self._radii_for(pixel_scale_arcsec)
 
         data = image.astype(np.float64)
         data = np.nan_to_num(data, nan=0.0)
@@ -61,13 +92,13 @@ class LensDetector:
         data_sub = data - bkg
 
         # Find central bright source (potential lens galaxy)
-        central = self._find_central_source(data_sub)
+        central = self._find_central_source(data_sub, radii)
 
         # Look for arcs around center
-        arcs = self._detect_arcs(data_sub, central, rms)
+        arcs = self._detect_arcs(data_sub, central, rms, radii)
 
         # Look for ring-like residuals
-        rings = self._detect_rings(data_sub, central, rms)
+        rings = self._detect_rings(data_sub, central, rms, radii)
 
         # Compute lens score
         lens_score = self._compute_lens_score(arcs, rings, central)
@@ -96,7 +127,7 @@ class LensDetector:
         cutout = data[y0:y1, x0:x1]
         return cutout, cx - x0, cy - y0
 
-    def _find_central_source(self, data: np.ndarray) -> dict[str, Any]:
+    def _find_central_source(self, data: np.ndarray, radii: LensRadii) -> dict[str, Any]:
         """Find the brightest central source."""
         # Smooth to find peak
         smoothed = ndimage.gaussian_filter(data, sigma=3.0)
@@ -104,10 +135,10 @@ class LensDetector:
         peak_flux = float(smoothed[cy, cx])
 
         # Work in a cutout around the peak for efficiency
-        cutout, lx, ly = self._get_cutout(data, cx, cy, self.ring_max_radius)
+        cutout, lx, ly = self._get_cutout(data, cx, cy, radii.ring_max)
         y, x = np.mgrid[: cutout.shape[0], : cutout.shape[1]]
         r = np.sqrt((x - lx) ** 2 + (y - ly) ** 2)
-        mask = r < self.ring_max_radius
+        mask = r < radii.ring_max
         if mask.any():
             sorted_r = np.sort(r[mask & (cutout > 0)])
             total_flux = np.sum(cutout[mask & (cutout > 0)])
@@ -128,14 +159,18 @@ class LensDetector:
         }
 
     def _detect_arcs(
-        self, data: np.ndarray, central: dict[str, Any], rms: float
+        self,
+        data: np.ndarray,
+        central: dict[str, Any],
+        rms: float,
+        radii: LensRadii,
     ) -> list[dict[str, Any]]:
         """Detect arc-like features around the central source."""
         cx, cy = central["x"], central["y"]
         hlr = central["half_light_radius"]
 
         # Work in a cutout around the central source for efficiency
-        cutout, lx, ly = self._get_cutout(data, cx, cy, self.ring_max_radius)
+        cutout, lx, ly = self._get_cutout(data, cx, cy, radii.ring_max)
         y, x = np.mgrid[: cutout.shape[0], : cutout.shape[1]]
         r = np.sqrt((x - lx) ** 2 + (y - ly) ** 2)
         model = central["peak_flux"] * np.exp(-0.5 * (r / max(hlr, 1)) ** 2)
@@ -143,7 +178,7 @@ class LensDetector:
         theta = np.arctan2(y - ly, x - lx)
 
         # Adaptive step: at least 10 radii, at most ~30
-        radius_range = self.ring_max_radius - self.ring_min_radius
+        radius_range = radii.ring_max - radii.ring_min
         arc_step = max(5, radius_range // 20)
 
         # Pre-compute sector starts for vectorized angular tests
@@ -151,7 +186,7 @@ class LensDetector:
         sector_width = np.pi / 3  # 60-degree sectors
 
         arcs = []
-        for r_inner in range(self.ring_min_radius, self.ring_max_radius, arc_step):
+        for r_inner in range(radii.ring_min, radii.ring_max, arc_step):
             r_outer = r_inner + self.arc_max_width
             annulus = (r >= r_inner) & (r < r_outer)
 
@@ -168,7 +203,7 @@ class LensDetector:
                 sector_mask = (annulus_theta >= sector_start) & (annulus_theta < sector_end)
                 n_sector = sector_mask.sum()
 
-                if n_sector < self.arc_min_length:
+                if n_sector < radii.arc_min_length:
                     continue
 
                 sector_flux = annulus_residual[sector_mask]
@@ -191,25 +226,29 @@ class LensDetector:
         return arcs[:10]
 
     def _detect_rings(
-        self, data: np.ndarray, central: dict[str, Any], rms: float
+        self,
+        data: np.ndarray,
+        central: dict[str, Any],
+        rms: float,
+        radii: LensRadii,
     ) -> list[dict[str, Any]]:
         """Detect ring-like residuals (Einstein rings)."""
         cx, cy = central["x"], central["y"]
         hlr = central["half_light_radius"]
 
         # Work in a cutout around the central source for efficiency
-        cutout, lx, ly = self._get_cutout(data, cx, cy, self.ring_max_radius)
+        cutout, lx, ly = self._get_cutout(data, cx, cy, radii.ring_max)
         y, x = np.mgrid[: cutout.shape[0], : cutout.shape[1]]
         r = np.sqrt((x - lx) ** 2 + (y - ly) ** 2)
         model = central["peak_flux"] * np.exp(-0.5 * (r / max(hlr, 1)) ** 2)
         residual = cutout - model
 
         # Adaptive step: at least 10 radii, at most ~40
-        radius_range = self.ring_max_radius - self.ring_min_radius
+        radius_range = radii.ring_max - radii.ring_min
         ring_step = max(2, radius_range // 30)
 
         rings = []
-        for radius in range(self.ring_min_radius, self.ring_max_radius, ring_step):
+        for radius in range(radii.ring_min, radii.ring_max, ring_step):
             ring_mask = (r >= radius - 2) & (r < radius + 2)
             if ring_mask.sum() < 20:
                 continue

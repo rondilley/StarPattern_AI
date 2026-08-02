@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
 
 from star_pattern.llm.providers.base import LLMProvider
 from star_pattern.utils.logging import get_logger
@@ -68,7 +67,7 @@ class LlamaCppProvider(LLMProvider):
 
     def is_available(self) -> bool:
         try:
-            from llama_cpp import Llama
+            from llama_cpp import Llama  # noqa: F401 - availability probe
 
             return Path(self._model_path).exists()
         except ImportError:

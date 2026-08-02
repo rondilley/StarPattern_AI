@@ -1,17 +1,17 @@
 """Core data types and configuration."""
 
+from star_pattern.core.catalog import CatalogEntry, StarCatalog
 from star_pattern.core.config import (
-    PipelineConfig,
     DataConfig,
     DetectionConfig,
     EvolutionConfig,
     LLMConfig,
-    WideFieldConfig,
+    PipelineConfig,
     SurveyConfig,
+    WideFieldConfig,
 )
 from star_pattern.core.fits_handler import FITSImage
-from star_pattern.core.sky_region import SkyRegion, RegionData
-from star_pattern.core.catalog import CatalogEntry, StarCatalog
+from star_pattern.core.sky_region import RegionData, SkyRegion
 
 __all__ = [
     "PipelineConfig",

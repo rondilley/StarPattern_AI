@@ -45,10 +45,13 @@ class HEALPixSurvey:
 
         # Lazy import astropy_healpix
         try:
-            from astropy_healpix import HEALPix as AstropyHEALPix
             from astropy.coordinates import ICRS
+            from astropy_healpix import HEALPix as AstropyHEALPix
+
             self._healpix = AstropyHEALPix(
-                nside=config.nside, order="ring", frame=ICRS(),
+                nside=config.nside,
+                order="ring",
+                frame=ICRS(),
             )
         except ImportError:
             raise ImportError(
@@ -73,8 +76,6 @@ class HEALPixSurvey:
 
     def _build_pixel_list(self) -> list[int]:
         """All HEALPix pixels passing galactic latitude filter, ordered by config.order."""
-        from astropy.coordinates import SkyCoord, Galactic
-        import astropy.units as u
 
         npix = _nside2npix(self.config.nside)
         all_indices = np.arange(npix)
@@ -95,8 +96,6 @@ class HEALPixSurvey:
 
     def _apply_ordering(self, pixels: list[int]) -> list[int]:
         """Sort pixel list according to config.order strategy."""
-        from astropy.coordinates import Galactic
-        import astropy.units as u
 
         if self.config.order == "galactic_latitude":
             # High |b| first (cleaner fields, less extinction)
@@ -150,17 +149,14 @@ class HEALPixSurvey:
             "config": asdict(self.config),
             "visited": sorted(self._visited),
             "pending": self._pending,
-            "findings_per_pixel": {
-                str(k): v for k, v in self._findings_per_pixel.items()
-            },
+            "findings_per_pixel": {str(k): v for k, v in self._findings_per_pixel.items()},
         }
         state_path = self.state_dir / self.config.state_file
         state_path.parent.mkdir(parents=True, exist_ok=True)
         with open(state_path, "w") as f:
             json.dump(state, f, indent=2)
         logger.info(
-            f"Survey state saved: {len(self._visited)} visited, "
-            f"{len(self._pending)} pending"
+            f"Survey state saved: {len(self._visited)} visited, " f"{len(self._pending)} pending"
         )
 
     def load_state(self) -> None:
@@ -176,8 +172,7 @@ class HEALPixSurvey:
         }
 
         logger.info(
-            f"Survey state loaded: {len(self._visited)} visited, "
-            f"{len(self._pending)} pending"
+            f"Survey state loaded: {len(self._visited)} visited, " f"{len(self._pending)} pending"
         )
 
     def coverage_stats(self) -> dict:
@@ -187,7 +182,8 @@ class HEALPixSurvey:
         n_remaining = n_total - n_visited
         percent_complete = (n_visited / n_total * 100.0) if n_total > 0 else 0.0
         n_with_findings = sum(
-            1 for pix in self._findings_per_pixel
+            1
+            for pix in self._findings_per_pixel
             if pix in self._all_pixels_set and self._findings_per_pixel[pix] > 0
         )
 

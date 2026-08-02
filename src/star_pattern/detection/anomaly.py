@@ -45,7 +45,9 @@ class AnomalyDetector:
         )
         self._model.fit(scaled)
         self._fitted = True
-        logger.info(f"Anomaly detector fitted on {features.shape[0]} samples, {features.shape[1]} features")
+        logger.info(
+            f"Anomaly detector fitted on {features.shape[0]} samples, {features.shape[1]} features"
+        )
 
     def score(self, features: np.ndarray) -> np.ndarray:
         """Score samples (lower = more anomalous).

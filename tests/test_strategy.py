@@ -4,10 +4,13 @@ import json
 
 import pytest
 
-from star_pattern.llm.strategy import StrategyAdvisor, StrategyResult
-from star_pattern.llm.token_tracker import TokenTracker, estimate_tokens
 from star_pattern.llm.cache import LLMCache
 from star_pattern.llm.providers.base import LLMProvider
+from star_pattern.llm.strategy import StrategyAdvisor, StrategyResult
+from star_pattern.llm.token_tracker import TokenTracker, estimate_tokens
+
+# Requires live external services; excluded from the offline CI run.
+pytestmark = pytest.mark.llm
 
 
 class FakeProvider(LLMProvider):
@@ -24,9 +27,7 @@ class FakeProvider(LLMProvider):
     def model_name(self) -> str:
         return "fake-model"
 
-    def generate(
-        self, prompt, system_prompt=None, max_tokens=2048, temperature=0.7
-    ) -> str:
+    def generate(self, prompt, system_prompt=None, max_tokens=2048, temperature=0.7) -> str:
         return self._response
 
 
@@ -69,7 +70,9 @@ class TestStrategyAdvisor:
         }
         genome = {
             "ensemble_weights": {
-                "lens": 0.20, "morphology": 0.15, "anomaly": 0.12,
+                "lens": 0.20,
+                "morphology": 0.15,
+                "anomaly": 0.12,
             },
         }
         al_stats = {
@@ -78,9 +81,7 @@ class TestStrategyAdvisor:
         }
         evo_history = [{"fitness": 0.72, "stagnation_count": 3}]
 
-        summary = advisor._build_summary(
-            findings, genome, al_stats, evo_history
-        )
+        summary = advisor._build_summary(findings, genome, al_stats, evo_history)
 
         # Check content
         assert "DETECTIONS" in summary
@@ -97,15 +98,22 @@ class TestStrategyAdvisor:
 
     def test_strategy_result_parsing(self):
         """JSON response is parsed correctly."""
-        response_json = json.dumps({
-            "detector_adjustments": [
-                {"parameter": "lens_snr_threshold", "current": 2.0, "suggested": 3.0, "reason": "test"}
-            ],
-            "weight_adjustments": {"lens": 0.25, "morphology": 0.15},
-            "focus_regions": [{"ra": 180, "dec": 45, "reason": "cluster field"}],
-            "detection_strategy": "Prioritize lens detection",
-            "stop_doing": "Low galactic latitude regions",
-        })
+        response_json = json.dumps(
+            {
+                "detector_adjustments": [
+                    {
+                        "parameter": "lens_snr_threshold",
+                        "current": 2.0,
+                        "suggested": 3.0,
+                        "reason": "test",
+                    }
+                ],
+                "weight_adjustments": {"lens": 0.25, "morphology": 0.15},
+                "focus_regions": [{"ra": 180, "dec": 45, "reason": "cluster field"}],
+                "detection_strategy": "Prioritize lens detection",
+                "stop_doing": "Low galactic latitude regions",
+            }
+        )
 
         tracker = TokenTracker(budget_tokens=100_000)
         advisor = StrategyAdvisor([], tracker)
@@ -144,11 +152,14 @@ class TestStrategyAdvisor:
         advisor._strategy_history.append(strategy)
 
         # Record outcome
-        outcome = advisor.record_outcome(0, {
-            "n_total": 15,
-            "n_high_confidence": 5,
-            "interesting_rate": 0.6,
-        })
+        outcome = advisor.record_outcome(
+            0,
+            {
+                "n_total": 15,
+                "n_high_confidence": 5,
+                "interesting_rate": 0.6,
+            },
+        )
 
         assert outcome is not None
         assert outcome["findings_delta"] == 5
@@ -168,24 +179,29 @@ class TestStrategyAdvisor:
         }
         advisor._strategy_history.append(strategy)
 
-        outcome = advisor.record_outcome(0, {
-            "n_total": 12,
-            "n_high_confidence": 4,
-            "interesting_rate": 0.5,
-        })
+        outcome = advisor.record_outcome(
+            0,
+            {
+                "n_total": 12,
+                "n_high_confidence": 4,
+                "interesting_rate": 0.5,
+            },
+        )
 
         assert outcome is not None
         assert outcome["improved"] is False
 
     def test_review_session_with_fake_provider(self):
         """Full review session with a fake provider."""
-        response_json = json.dumps({
-            "detector_adjustments": [],
-            "weight_adjustments": {},
-            "focus_regions": [],
-            "detection_strategy": "Focus on morphology",
-            "stop_doing": "Nothing",
-        })
+        response_json = json.dumps(
+            {
+                "detector_adjustments": [],
+                "weight_adjustments": {},
+                "focus_regions": [],
+                "detection_strategy": "Focus on morphology",
+                "stop_doing": "Nothing",
+            }
+        )
 
         provider = FakeProvider(response=response_json)
         tracker = TokenTracker(budget_tokens=100_000)
@@ -221,13 +237,15 @@ class TestStrategyAdvisor:
 
     def test_cache_hit(self, tmp_path):
         """Identical summaries return cached response."""
-        response_json = json.dumps({
-            "detector_adjustments": [],
-            "weight_adjustments": {},
-            "focus_regions": [],
-            "detection_strategy": "cached result",
-            "stop_doing": "",
-        })
+        response_json = json.dumps(
+            {
+                "detector_adjustments": [],
+                "weight_adjustments": {},
+                "focus_regions": [],
+                "detection_strategy": "cached result",
+                "stop_doing": "",
+            }
+        )
 
         provider = FakeProvider(response=response_json)
         tracker = TokenTracker(budget_tokens=100_000)
@@ -255,10 +273,16 @@ class TestStrategyAdvisor:
 
     def test_batch_review_parsing(self):
         """Batch review response is parsed correctly."""
-        response = json.dumps([
-            {"verdict": "real", "classification": "lens", "brief_hypothesis": "Arc morphology"},
-            {"verdict": "artifact", "classification": "PSF", "brief_hypothesis": "Diffraction spike"},
-        ])
+        response = json.dumps(
+            [
+                {"verdict": "real", "classification": "lens", "brief_hypothesis": "Arc morphology"},
+                {
+                    "verdict": "artifact",
+                    "classification": "PSF",
+                    "brief_hypothesis": "Diffraction spike",
+                },
+            ]
+        )
 
         tracker = TokenTracker(budget_tokens=100_000)
         advisor = StrategyAdvisor([], tracker)

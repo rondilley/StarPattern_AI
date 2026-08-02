@@ -203,10 +203,7 @@ class LocalClassifier:
 
         # Check for novelty: needs LLM if no cross-matches AND high score
         cross_matches = detection.get("cross_matches", [])
-        novel = (
-            not cross_matches
-            and confidence > self.novelty_confidence_threshold
-        )
+        novel = not cross_matches and confidence > self.novelty_confidence_threshold
 
         needs_llm = ambiguous or novel
 
@@ -267,9 +264,7 @@ class LocalClassifier:
 
         return scores
 
-    def _generate_rationale(
-        self, dominant: str, scores: dict[str, float]
-    ) -> str:
+    def _generate_rationale(self, dominant: str, scores: dict[str, float]) -> str:
         """Generate a deterministic rationale string."""
         score = scores.get(dominant, 0.0)
 
@@ -285,6 +280,5 @@ class LocalClassifier:
             return template.format(score=score, strength=strength)
 
         return (
-            f"Detection dominated by {dominant} detector "
-            f"with score {score:.2f} ({strength})."
+            f"Detection dominated by {dominant} detector " f"with score {score:.2f} ({strength})."
         )

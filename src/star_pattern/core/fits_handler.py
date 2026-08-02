@@ -8,11 +8,11 @@ from typing import Any
 import numpy as np
 
 try:
-    from astropy.io import fits
-    from astropy.wcs import WCS
-    from astropy.coordinates import SkyCoord
-    from astropy.nddata import Cutout2D
     import astropy.units as u
+    from astropy.coordinates import SkyCoord
+    from astropy.io import fits
+    from astropy.nddata import Cutout2D
+    from astropy.wcs import WCS
 except ImportError as e:
     raise ImportError("astropy is required: pip install astropy") from e
 

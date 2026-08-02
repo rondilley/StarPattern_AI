@@ -42,14 +42,18 @@ class DataCache:
         self._index_file.write_text(json.dumps(self._index, indent=2))
 
     @staticmethod
-    def _make_key(source: str, ra: float, dec: float, radius: float, band: str = "", epoch: str = "") -> str:
+    def _make_key(
+        source: str, ra: float, dec: float, radius: float, band: str = "", epoch: str = ""
+    ) -> str:
         """Create a unique cache key."""
         raw = f"{source}:{ra:.6f}:{dec:.6f}:{radius:.4f}:{band}"
         if epoch:
             raw += f":{epoch}"
         return hashlib.sha256(raw.encode()).hexdigest()[:16]
 
-    def get_path(self, source: str, ra: float, dec: float, radius: float, band: str = "", epoch: str = "") -> Path | None:
+    def get_path(
+        self, source: str, ra: float, dec: float, radius: float, band: str = "", epoch: str = ""
+    ) -> Path | None:
         """Get cached file path if it exists."""
         key = self._make_key(source, ra, dec, radius, band, epoch=epoch)
         if key in self._index:
@@ -88,7 +92,14 @@ class DataCache:
         logger.debug(f"Cached: {key} -> {path}")
 
     def cache_path_for(
-        self, source: str, ra: float, dec: float, radius: float, band: str = "", epoch: str = "", ext: str = ".fits"
+        self,
+        source: str,
+        ra: float,
+        dec: float,
+        radius: float,
+        band: str = "",
+        epoch: str = "",
+        ext: str = ".fits",
     ) -> Path:
         """Generate a cache file path (does not create the file)."""
         key = self._make_key(source, ra, dec, radius, band, epoch=epoch)
@@ -164,7 +175,9 @@ class DataCache:
                 "n_entries": len(entries),
             }
             self._save_index()
-            logger.info(f"Cached catalog: {source} at ({ra:.3f}, {dec:.3f}), {len(entries)} entries")
+            logger.info(
+                f"Cached catalog: {source} at ({ra:.3f}, {dec:.3f}), {len(entries)} entries"
+            )
         except Exception as e:
             logger.debug(f"Catalog cache write failed: {e}")
 

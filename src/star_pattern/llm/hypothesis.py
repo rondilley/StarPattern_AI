@@ -7,8 +7,8 @@ import re
 from typing import Any
 
 from star_pattern.core.config import LLMConfig
+from star_pattern.llm.prompts import HYPOTHESIS_PROMPT, SYSTEM_ASTRONOMER
 from star_pattern.llm.providers.base import LLMProvider
-from star_pattern.llm.prompts import SYSTEM_ASTRONOMER, HYPOTHESIS_PROMPT
 from star_pattern.utils.logging import get_logger
 
 logger = get_logger("llm.hypothesis")
@@ -92,9 +92,7 @@ class HypothesisGenerator:
         )
         return result
 
-    def generate_batch(
-        self, patterns: list[dict[str, Any]]
-    ) -> list[dict[str, Any]]:
+    def generate_batch(self, patterns: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Generate hypotheses for multiple patterns."""
         results = []
         for i, pattern in enumerate(patterns):

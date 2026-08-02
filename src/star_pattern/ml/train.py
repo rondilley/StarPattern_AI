@@ -10,9 +10,9 @@ import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
 
-from star_pattern.ml.dataset import FITSDataset, AstroAugmentation
-from star_pattern.ml.models import LensNet, AstroClassifier, SimpleUNet
+from star_pattern.ml.dataset import AstroAugmentation, FITSDataset
 from star_pattern.ml.losses import CombinedLoss, FocalLoss
+from star_pattern.ml.models import AstroClassifier, LensNet, SimpleUNet
 from star_pattern.utils.gpu import get_device
 from star_pattern.utils.logging import get_logger
 
@@ -88,16 +88,12 @@ class Trainer:
         n_train = len(dataset) - n_val
         train_ds, val_ds = torch.utils.data.random_split(dataset, [n_train, n_val])
 
-        train_loader = DataLoader(
-            train_ds, batch_size=self.batch_size, shuffle=True, num_workers=0
-        )
+        train_loader = DataLoader(train_ds, batch_size=self.batch_size, shuffle=True, num_workers=0)
         val_loader = DataLoader(val_ds, batch_size=self.batch_size, shuffle=False, num_workers=0)
 
         self._setup_model(dataset)
 
-        logger.info(
-            f"Training {self.task}: {n_train} train, {n_val} val, {self.epochs} epochs"
-        )
+        logger.info(f"Training {self.task}: {n_train} train, {n_val} val, {self.epochs} epochs")
 
         history: dict[str, list[float]] = {"train_loss": [], "val_loss": []}
         best_val_loss = float("inf")
@@ -134,9 +130,7 @@ class Trainer:
                 for batch in val_loader:
                     images = batch["image"].to(self.device)
                     if "label" in batch:
-                        targets = torch.tensor(batch["label"], dtype=torch.float32).to(
-                            self.device
-                        )
+                        targets = torch.tensor(batch["label"], dtype=torch.float32).to(self.device)
                     else:
                         targets = images
 

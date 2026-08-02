@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 from star_pattern.llm.providers.base import LLMProvider
-from star_pattern.utils.retry import retry_with_backoff
+from star_pattern.llm.providers.models import OPENAI_DEFAULT_MODEL
 from star_pattern.utils.logging import get_logger
+from star_pattern.utils.retry import retry_with_backoff
 
 logger = get_logger("llm.openai")
 
@@ -12,7 +13,7 @@ logger = get_logger("llm.openai")
 class OpenAIProvider(LLMProvider):
     """OpenAI GPT provider."""
 
-    def __init__(self, api_key: str, model: str = "gpt-4o"):
+    def __init__(self, api_key: str, model: str = OPENAI_DEFAULT_MODEL):
         self._api_key = api_key
         self._model = model
         self._client = None
@@ -46,18 +47,38 @@ class OpenAIProvider(LLMProvider):
             messages.append({"role": "system", "content": system_prompt})
         messages.append({"role": "user", "content": prompt})
 
-        response = client.chat.completions.create(
-            model=self._model,
-            messages=messages,
-            max_tokens=max_tokens,
-            temperature=temperature,
-        )
+        import openai
+
+        try:
+            response = client.chat.completions.create(
+                model=self._model,
+                messages=messages,
+                max_tokens=max_tokens,
+                temperature=temperature,
+            )
+        except openai.NotFoundError:
+            logger.error(
+                "OpenAI model %s not found. Check the identifier in " "llm/providers/models.py.",
+                self._model,
+            )
+            raise
+        except openai.AuthenticationError:
+            logger.error("OpenAI API key rejected")
+            raise
+        except openai.BadRequestError as exc:
+            logger.error("OpenAI rejected the request: %s", exc)
+            raise
+
+        # An empty choices list is legal in the schema and indexing it
+        # blindly raises IndexError.
+        if not response.choices:
+            logger.warning("OpenAI returned no choices")
+            return ""
         return response.choices[0].message.content or ""
 
     def is_available(self) -> bool:
         try:
-            from openai import OpenAI
-
-            return bool(self._api_key)
+            import openai  # noqa: F401
         except ImportError:
             return False
+        return bool(self._api_key)

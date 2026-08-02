@@ -78,14 +78,10 @@ class LocalEvaluator:
 
         # Escalate to LLM only if inconclusive AND high anomaly score
         anomaly_score = detection.get("anomaly_score", 0)
-        needs_llm = (
-            verdict == "inconclusive"
-            and anomaly_score > self.escalation_score_threshold
-        )
+        needs_llm = verdict == "inconclusive" and anomaly_score > self.escalation_score_threshold
 
         reasoning = (
-            f"SNR={snr:.1f}, {n_agreeing} detectors agree, "
-            f"p_corrected={look_elsewhere_p:.3f}"
+            f"SNR={snr:.1f}, {n_agreeing} detectors agree, " f"p_corrected={look_elsewhere_p:.3f}"
         )
 
         # Build a ConfidenceScore for region-level evaluation
@@ -110,18 +106,25 @@ class LocalEvaluator:
             if isinstance(sec, dict) and sec.get(key, 0) > self.agreement_threshold:
                 agreeing_names.append(_det)
 
+        # Both numbers here are real: p_snr is a Gaussian tail probability
+        # on the measured region SNR, and p_combined is a Bonferroni
+        # correction over the detectors that actually agreed. The previous
+        # code reported look_elsewhere_p instead, which is synthesized from
+        # anomaly_score itself (see _look_elsewhere_correction) and is not a
+        # probability under any data-independent null.
+        n_tests = max(n_agreeing, 1)
         region_confidence = ConfidenceScore(
-            confidence=1 - look_elsewhere_p,
+            confidence=1 - p_combined,
             p_value=p_snr,
-            p_corrected=look_elsewhere_p,
+            p_corrected=p_combined,
             physical_quantity="SNR",
             physical_value=float(snr),
             method="gaussian_sf",
             annotation=(
                 f"Region SNR={snr:.1f}, {n_agreeing} detectors agree "
-                f"(p_corrected={look_elsewhere_p:.2e})"
+                f"(p={p_combined:.2e}, Bonferroni {n_tests} tests)"
             ),
-            n_independent_tests=13,
+            n_independent_tests=n_tests,
             correction_method="bonferroni",
             n_agreeing_detectors=n_agreeing,
             agreement_details=agreeing_names,
@@ -211,6 +214,14 @@ class LocalEvaluator:
         Adjusts p-value for the number of independent tests (detectors)
         that were run. Conservative correction ensures we only flag
         detections that survive multiple-testing adjustment.
+
+        WARNING: the Poisson inputs below are synthesized from
+        anomaly_score itself, so the result is a monotone transform of
+        that score and not a probability under a data-independent null.
+        It is retained only as a verdict-gating threshold, where the
+        calibration of the existing thresholds depends on it. It must
+        NOT be reported as a p-value; see region_confidence above, which
+        uses the measured SNR instead.
         """
         from star_pattern.evaluation.metrics import detection_significance
 

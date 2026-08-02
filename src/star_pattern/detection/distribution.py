@@ -5,8 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 import numpy as np
-from scipy.spatial import Voronoi, Delaunay
-from scipy import stats
+from scipy.spatial import Voronoi
 
 from star_pattern.utils.logging import get_logger
 
@@ -19,7 +18,9 @@ class DistributionAnalyzer:
     def __init__(self, n_bootstrap: int = 100):
         self.n_bootstrap = n_bootstrap
 
-    def analyze(self, positions: np.ndarray, boundary: tuple[float, float] | None = None) -> dict[str, Any]:
+    def analyze(
+        self, positions: np.ndarray, boundary: tuple[float, float] | None = None
+    ) -> dict[str, Any]:
         """Full distribution analysis on source positions.
 
         Args:
@@ -116,7 +117,7 @@ class DistributionAnalyzer:
         if n < 10:
             return {"tpcf_error": "Too few points"}
 
-        from scipy.spatial.distance import pdist, cdist
+        from scipy.spatial.distance import cdist, pdist
 
         # Data-Data pair distances
         dd_dists = pdist(positions)
@@ -134,10 +135,12 @@ class DistributionAnalyzer:
         # Generate random catalog (2x the data count for better statistics)
         rng = np.random.default_rng(42)
         n_random = n * 2
-        random_positions = np.column_stack([
-            rng.uniform(x_min, x_max, n_random),
-            rng.uniform(y_min, y_max, n_random),
-        ])
+        random_positions = np.column_stack(
+            [
+                rng.uniform(x_min, x_max, n_random),
+                rng.uniform(y_min, y_max, n_random),
+            ]
+        )
 
         # Random-Random pair distances
         rr_dists = pdist(random_positions)
@@ -201,7 +204,9 @@ class DistributionAnalyzer:
             "nn_mean_distance": mean_nn,
             "nn_std_distance": float(np.std(nn_dists)),
             "clark_evans_r": clark_evans,
-            "nn_distribution": "clustered" if clark_evans < 0.8 else "random" if clark_evans < 1.2 else "uniform",
+            "nn_distribution": (
+                "clustered" if clark_evans < 0.8 else "random" if clark_evans < 1.2 else "uniform"
+            ),
         }
 
     def _detect_overdensities(
@@ -241,15 +246,15 @@ class DistributionAnalyzer:
             labeled, n_features = label(overdense)
             for i in range(1, n_features + 1):
                 mask = labeled == i
-                peak_idx = np.unravel_index(
-                    np.argmax(density * mask), density.shape
-                )
+                peak_idx = np.unravel_index(np.argmax(density * mask), density.shape)
                 overdensities.append(
                     {
                         "x": float(x_grid[peak_idx[1]]),
                         "y": float(y_grid[peak_idx[0]]),
                         "peak_density": float(density[peak_idx]),
-                        "sigma": float((density[peak_idx] - mean_density) / max(std_density, 1e-10)),
+                        "sigma": float(
+                            (density[peak_idx] - mean_density) / max(std_density, 1e-10)
+                        ),
                         "n_pixels": int(mask.sum()),
                     }
                 )

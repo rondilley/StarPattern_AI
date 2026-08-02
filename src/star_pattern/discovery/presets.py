@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from star_pattern.discovery.genome import DetectionGenome, GENE_DEFINITIONS
+from star_pattern.discovery.genome import GENE_DEFINITIONS, DetectionGenome
 
 
 def _make_genome(values: dict[str, float], rng: np.random.Generator) -> DetectionGenome:

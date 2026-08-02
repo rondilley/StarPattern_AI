@@ -64,16 +64,18 @@ class TransientDetector:
 
         # Build combined variable_candidates list
         results["variable_candidates"] = (
-            results["astrometric_outliers"]
-            + results["photometric_outliers"]
+            results["astrometric_outliers"] + results["photometric_outliers"]
         )
 
-        transient_score = float(np.clip(
-            0.4 * min(n_astro, 5) / 5.0
-            + 0.3 * min(n_photo, 5) / 5.0
-            + 0.3 * min(n_parallax, 5) / 5.0,
-            0.0, 1.0,
-        ))
+        transient_score = float(
+            np.clip(
+                0.4 * min(n_astro, 5) / 5.0
+                + 0.3 * min(n_photo, 5) / 5.0
+                + 0.3 * min(n_parallax, 5) / 5.0,
+                0.0,
+                1.0,
+            )
+        )
 
         results["transient_score"] = transient_score
         results["n_detections"] = n_astro + n_photo + n_parallax
@@ -126,14 +128,16 @@ class TransientDetector:
         for i, entry in enumerate(entries_with_noise):
             deviation = (noise_arr[i] - median_noise) / sigma
             if deviation > self.noise_threshold:
-                outliers.append({
-                    "type": "astrometric_outlier",
-                    "source_id": entry.source_id,
-                    "ra": entry.ra,
-                    "dec": entry.dec,
-                    "astrometric_noise": float(noise_arr[i]),
-                    "deviation_sigma": float(deviation),
-                })
+                outliers.append(
+                    {
+                        "type": "astrometric_outlier",
+                        "source_id": entry.source_id,
+                        "ra": entry.ra,
+                        "dec": entry.dec,
+                        "astrometric_noise": float(noise_arr[i]),
+                        "deviation_sigma": float(deviation),
+                    }
+                )
 
         return outliers
 
@@ -197,9 +201,11 @@ class TransientDetector:
 
         # Fit simple linear color-magnitude relation
         try:
-            slope, intercept, _, _, _ = np.polynomial.polynomial.polyfit(
-                mags_arr, colors_arr, deg=1, full=True
-            )[:2] if False else (0, 0, 0, 0, 0)
+            slope, intercept, _, _, _ = (
+                np.polynomial.polynomial.polyfit(mags_arr, colors_arr, deg=1, full=True)[:2]
+                if False
+                else (0, 0, 0, 0, 0)
+            )
         except Exception:
             pass
 
@@ -224,15 +230,17 @@ class TransientDetector:
                 deviation = abs(bin_colors[k] - median_color) / sigma
                 if deviation > self.noise_threshold:
                     entry = valid_entries[idx]
-                    outliers.append({
-                        "type": "photometric_outlier",
-                        "source_id": entry.source_id,
-                        "ra": entry.ra,
-                        "dec": entry.dec,
-                        "bp_rp_color": float(colors_arr[idx]),
-                        "expected_color": float(median_color),
-                        "deviation_sigma": float(deviation),
-                    })
+                    outliers.append(
+                        {
+                            "type": "photometric_outlier",
+                            "source_id": entry.source_id,
+                            "ra": entry.ra,
+                            "dec": entry.dec,
+                            "bp_rp_color": float(colors_arr[idx]),
+                            "expected_color": float(median_color),
+                            "deviation_sigma": float(deviation),
+                        }
+                    )
 
         return outliers
 
@@ -277,14 +285,16 @@ class TransientDetector:
                     reason = "low_parallax_snr"
 
             if is_anomalous:
-                anomalies.append({
-                    "type": "parallax_anomaly",
-                    "source_id": entry.source_id,
-                    "ra": entry.ra,
-                    "dec": entry.dec,
-                    "parallax": plx,
-                    "parallax_error": plx_err,
-                    "reason": reason,
-                })
+                anomalies.append(
+                    {
+                        "type": "parallax_anomaly",
+                        "source_id": entry.source_id,
+                        "ra": entry.ra,
+                        "dec": entry.dec,
+                        "parallax": plx,
+                        "parallax_error": plx_err,
+                        "reason": reason,
+                    }
+                )
 
         return anomalies

@@ -1,9 +1,8 @@
 """Tests for Sersic profile fitting."""
 
 import numpy as np
-import pytest
 
-from star_pattern.detection.sersic import SersicAnalyzer, sersic_1d, _sersic_bn
+from star_pattern.detection.sersic import SersicAnalyzer, _sersic_bn, sersic_1d
 
 
 class TestSersicBn:
@@ -139,7 +138,7 @@ class TestSersicAnalyzer:
         data = self._make_sersic_galaxy(n=2.0, r_e=20.0, I_e=500.0, noise=5.0)
         # Add bright feature at r~30 px (outside r_e)
         y, x = np.mgrid[:128, :128]
-        clump = 200 * np.exp(-((x - 90) ** 2 + (y - 64) ** 2) / (2 * 3 ** 2))
+        clump = 200 * np.exp(-((x - 90) ** 2 + (y - 64) ** 2) / (2 * 3**2))
         data = data + clump.astype(np.float32)
 
         analyzer = SersicAnalyzer(residual_sigma=2.5)

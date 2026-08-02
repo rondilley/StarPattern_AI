@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import sys
 from pathlib import Path
 
 import click
@@ -56,8 +55,8 @@ def fetch(
 ) -> None:
     """Fetch astronomical data for a sky region."""
     from star_pattern.core.sky_region import SkyRegion
-    from star_pattern.data.sdss import SDSSDataSource
     from star_pattern.data.cache import DataCache
+    from star_pattern.data.sdss import SDSSDataSource
 
     config = ctx.obj["config"]
     cache = DataCache(config.data.cache_dir)
@@ -97,7 +96,9 @@ def fetch(
 
     # Fetch
     for region in regions:
-        console.print(f"\n[bold]Fetching ({region.ra:.4f}, {region.dec:.4f}) r={region.radius}'[/bold]")
+        console.print(
+            f"\n[bold]Fetching ({region.ra:.4f}, {region.dec:.4f}) r={region.radius}'[/bold]"
+        )
         for source in active_sources:
             data = source.fetch_region(region, bands=band_list)
             if data.has_images():
@@ -141,13 +142,8 @@ def fetch_wide(
 
     band_list = [b.strip() for b in bands.split(",")]
 
-    console.print(
-        f"[bold]Wide-field fetch: "
-        f"({ra:.4f}, {dec:.4f}) r={field_radius}'[/bold]"
-    )
-    console.print(
-        f"  Tile radius: {tile_radius}', overlap: {overlap}"
-    )
+    console.print(f"[bold]Wide-field fetch: " f"({ra:.4f}, {dec:.4f}) r={field_radius}'[/bold]")
+    console.print(f"  Tile radius: {tile_radius}', overlap: {overlap}")
 
     pipeline = WideFieldPipeline(config)
     result = pipeline.fetch_wide_field(
@@ -169,6 +165,7 @@ def fetch_wide(
         # Save PNG overlay
         try:
             import matplotlib
+
             matplotlib.use("Agg")
             import matplotlib.pyplot as plt
 
@@ -195,11 +192,15 @@ def fetch_wide(
 
 @cli.command()
 @click.option("--input", "-i", "input_path", required=True, help="FITS file or directory")
-@click.option("--type", "-t", "det_type", default="all", help="Detection type (all, classical, anomaly, lens)")
+@click.option(
+    "--type", "-t", "det_type", default="all", help="Detection type (all, classical, anomaly, lens)"
+)
 @click.option("--batch", is_flag=True, help="Process all FITS in directory")
 @click.option("--output", "-o", default=None, help="Output directory")
 @click.pass_context
-def detect(ctx: click.Context, input_path: str, det_type: str, batch: bool, output: str | None) -> None:
+def detect(
+    ctx: click.Context, input_path: str, det_type: str, batch: bool, output: str | None
+) -> None:
     """Run pattern detection on FITS images."""
     from star_pattern.core.fits_handler import FITSImage
     from star_pattern.detection.ensemble import EnsembleDetector
@@ -239,8 +240,9 @@ def detect(ctx: click.Context, input_path: str, det_type: str, batch: bool, outp
         console.print(f"\nResults saved to {out_path / 'detections.json'}")
 
         # Save overlay images for each detection
-        from star_pattern.visualization.pattern_overlay import overlay_sources
         import matplotlib.pyplot as plt
+
+        from star_pattern.visualization.pattern_overlay import overlay_sources
 
         for i, (fpath, result) in enumerate(zip(files, results)):
             try:
@@ -250,7 +252,8 @@ def detect(ctx: click.Context, input_path: str, det_type: str, batch: bool, outp
                     fig = overlay_sources(img, sources)
                     fig.savefig(
                         str(out_path / f"{fpath.stem}_overlay.png"),
-                        dpi=150, bbox_inches="tight",
+                        dpi=150,
+                        bbox_inches="tight",
                     )
                     plt.close(fig)
                     console.print(f"  Overlay: {fpath.stem}_overlay.png")
@@ -300,10 +303,18 @@ def evolve(ctx: click.Context, generations: int, population: int, resume: str | 
     help="Survey visit order",
 )
 @click.option("--with-ztf/--no-ztf", default=True, help="Include ZTF light curves")
-@click.option("--slaves", type=str, default=None,
-              help="Comma-separated slave addresses (host:port,...) for distributed mode")
-@click.option("--auth-token", "discover_auth_token", default="",
-              help="Shared auth token for distributed communication")
+@click.option(
+    "--slaves",
+    type=str,
+    default=None,
+    help="Comma-separated slave addresses (host:port,...) for distributed mode",
+)
+@click.option(
+    "--auth-token",
+    "discover_auth_token",
+    default="",
+    help="Shared auth token for distributed communication",
+)
 @click.pass_context
 def discover(
     ctx: click.Context,
@@ -332,6 +343,7 @@ def discover(
     # Configure distributed mode if slaves specified
     if slaves:
         from star_pattern.distributed.config import DistributedConfig
+
         addresses = [a.strip() for a in slaves.split(",") if a.strip()]
         config.distributed = DistributedConfig(
             mode="master",
@@ -349,11 +361,10 @@ def discover(
         console.print(f"  Wide-field mode: {wide_field}' radius")
     if survey:
         from star_pattern.core.config import SurveyConfig
+
         survey_config = SurveyConfig(nside=nside, order=survey_order)
         pipeline.set_survey(survey_config)
-        console.print(
-            f"  Survey mode: NSIDE={nside}, order={survey_order}"
-        )
+        console.print(f"  Survey mode: NSIDE={nside}, order={survey_order}")
     findings = pipeline.run(max_hours=hours)
 
     # Summary table
@@ -372,7 +383,7 @@ def discover(
             )
         console.print(table)
 
-    console.print(f"\n[bold green]Discovery complete.[/bold green]")
+    console.print("\n[bold green]Discovery complete.[/bold green]")
     console.print(f"Run saved to: {run_mgr.run_dir}")
     console.print(f"Images: {run_mgr.images_dir}")
     console.print(f"Reports: {run_mgr.reports_dir}")
@@ -423,7 +434,8 @@ def train(ctx: click.Context, task: str, data_dir: str, epochs: int, batch_size:
     """Train a detection model."""
     from star_pattern.ml.train import Trainer
 
-    config = ctx.obj["config"]
+    # Trainer takes its settings from the command options, not from the
+    # pipeline config, so nothing is read from ctx here.
     console.print(f"[bold]Training {task} model for {epochs} epochs[/bold]")
 
     trainer = Trainer(task=task, data_dir=data_dir, epochs=epochs, batch_size=batch_size)
@@ -471,6 +483,44 @@ def survey_status(state_file: str) -> None:
     console.print(table)
 
 
+@cli.command(name="gpu-check")
+def gpu_check() -> None:
+    """Report the GPU and NPU accelerators available on this machine."""
+    from star_pattern.utils.gpu import (
+        get_npu_providers,
+        hardware_summary,
+    )
+
+    summary = hardware_summary()
+    npu_hw = summary["npu_hardware"]
+
+    table = RichTable(title="Hardware Accelerator Status")
+    table.add_column("Component", style="cyan")
+    table.add_column("Value")
+
+    def _show(value: object) -> str:
+        return "not available" if value is None else str(value)
+
+    memory = summary["memory_mb"]
+    rows = [
+        ("GPU backend", _show(summary["gpu_backend"])),
+        ("GPU name", _show(summary["gpu_name"])),
+        ("GPU memory (MB)", f"{memory:.0f}" if memory else "not available"),
+        ("PyTorch version", _show(summary["torch_version"])),
+        ("CUDA version", _show(summary["cuda_version"])),
+        ("HIP version", _show(summary["hip_version"])),
+        ("NPU backend", _show(summary["npu_backend"])),
+        ("NPU hardware", "present" if npu_hw["present"] else "not present"),
+        ("NPU device", _show(npu_hw["device_path"])),
+        ("NPU driver", _show(npu_hw["driver"])),
+        ("ONNX providers", ", ".join(get_npu_providers())),
+    ]
+    for label, value in rows:
+        table.add_row(label, value)
+
+    console.print(table)
+
+
 @cli.command(name="setup-local")
 def setup_local() -> None:
     """Set up local LLM backend."""
@@ -493,6 +543,7 @@ def setup_local() -> None:
 def serve(ctx: click.Context, host: str, port: int, auth_token: str) -> None:
     """Start as a slave worker node, listening for work from a master."""
     import asyncio
+
     from star_pattern.distributed.config import DistributedConfig
     from star_pattern.distributed.slave import SlaveServer
 
@@ -504,9 +555,7 @@ def serve(ctx: click.Context, host: str, port: int, auth_token: str) -> None:
         auth_token=auth_token,
     )
 
-    console.print(
-        f"[bold]Starting slave worker on {host}:{port}...[/bold]"
-    )
+    console.print(f"[bold]Starting slave worker on {host}:{port}...[/bold]")
     server = SlaveServer(config)
     try:
         asyncio.run(server.start())

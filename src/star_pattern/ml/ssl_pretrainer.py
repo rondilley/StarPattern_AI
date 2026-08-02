@@ -11,7 +11,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
 
-from star_pattern.ml.dataset import FITSDataset, AstroAugmentation
+from star_pattern.ml.dataset import AstroAugmentation, FITSDataset
 from star_pattern.utils.gpu import get_device
 from star_pattern.utils.logging import get_logger
 
@@ -75,9 +75,7 @@ class BYOL(nn.Module):
         ):
             target_p.data = self.momentum * target_p.data + (1 - self.momentum) * online_p.data
 
-    def forward(
-        self, view1: torch.Tensor, view2: torch.Tensor
-    ) -> torch.Tensor:
+    def forward(self, view1: torch.Tensor, view2: torch.Tensor) -> torch.Tensor:
         """Compute BYOL loss from two augmented views."""
         # Online path
         online_feat1 = self.online_encoder(view1)
@@ -120,6 +118,34 @@ class BYOL(nn.Module):
         return 2 - 2 * (pred * target).sum(dim=-1).mean()
 
 
+def _augment_batch(images: torch.Tensor, noise_level: float = 0.03) -> torch.Tensor:
+    """Randomly augment a batch of images on the device.
+
+    Mirrors AstroAugmentation (random 90-degree rotation, random flips,
+    additive Gaussian noise) but operates on a batched tensor so it can
+    generate a second BYOL view without a round trip to numpy.
+
+    The rotation and flip choices are drawn per batch rather than per
+    image, which is enough to keep the two views decorrelated across
+    steps while staying a single fused operation.
+
+    Args:
+        images: Batch shaped (N, C, H, W).
+        noise_level: Standard deviation of the additive noise.
+
+    Returns:
+        A new augmented tensor. The input is not modified.
+    """
+    out = torch.rot90(images, k=int(torch.randint(0, 4, (1,)).item()), dims=(-2, -1))
+    if torch.rand(1).item() > 0.5:
+        out = torch.flip(out, dims=[-1])
+    if torch.rand(1).item() > 0.5:
+        out = torch.flip(out, dims=[-2])
+    if noise_level > 0:
+        out = out + noise_level * torch.randn_like(out)
+    return out
+
+
 class SSLPretrainer:
     """Self-supervised pretraining manager."""
 
@@ -145,9 +171,12 @@ class SSLPretrainer:
         """
         import torchvision.models as models
 
-        # Create two augmentation pipelines
+        # The dataset applies the first augmentation per image on the CPU.
+        # The second view is generated on-device below, because
+        # AstroAugmentation operates on a single numpy image and cannot be
+        # applied to a batched tensor.
         aug1 = AstroAugmentation(noise_level=0.01)
-        aug2 = AstroAugmentation(noise_level=0.03)
+        second_view_noise = 0.03
 
         dataset = FITSDataset.from_directory(self.data_dir, transform=aug1)
         if len(dataset) == 0:
@@ -179,10 +208,14 @@ class SSLPretrainer:
             losses = []
             for batch in loader:
                 images = batch["image"].to(self.device)
-                # Create two views via augmentation
+                # BYOL learns by matching two INDEPENDENTLY augmented
+                # views. The previous second view was a fixed horizontal
+                # flip plus fixed noise, which is the same transform on
+                # every batch: the network can satisfy it without
+                # learning anything invariant, which is what makes a
+                # collapsed BYOL objective look like it is training.
                 view1 = images
-                # Simple second view: flip + noise
-                view2 = torch.flip(images, dims=[-1]) + 0.02 * torch.randn_like(images)
+                view2 = _augment_batch(images, noise_level=second_view_noise)
 
                 loss = model(view1, view2)
                 optimizer.zero_grad()

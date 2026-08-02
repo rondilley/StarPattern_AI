@@ -7,7 +7,6 @@ for the main pipeline thread.
 from __future__ import annotations
 
 import asyncio
-import queue
 import threading
 from dataclasses import asdict
 from typing import Any
@@ -16,7 +15,7 @@ from star_pattern.core.config import PipelineConfig
 from star_pattern.core.sky_region import SkyRegion
 from star_pattern.distributed.config import DistributedConfig
 from star_pattern.distributed.master import MasterDispatcher
-from star_pattern.distributed.protocol import WorkUnit, WorkResult
+from star_pattern.distributed.protocol import WorkResult, WorkUnit
 from star_pattern.evaluation.metrics import Anomaly, PatternResult
 from star_pattern.utils.logging import get_logger
 
@@ -41,16 +40,18 @@ def _result_dict_to_pattern_result(d: dict[str, Any]) -> PatternResult:
 
     # Reconstruct anomalies
     for a_dict in d.get("anomalies", []):
-        pr.anomalies.append(Anomaly(
-            anomaly_type=a_dict.get("anomaly_type", ""),
-            detector=a_dict.get("detector", ""),
-            pixel_x=a_dict.get("pixel_x"),
-            pixel_y=a_dict.get("pixel_y"),
-            sky_ra=a_dict.get("sky_ra"),
-            sky_dec=a_dict.get("sky_dec"),
-            score=a_dict.get("score", 0.0),
-            properties=a_dict.get("properties", {}),
-        ))
+        pr.anomalies.append(
+            Anomaly(
+                anomaly_type=a_dict.get("anomaly_type", ""),
+                detector=a_dict.get("detector", ""),
+                pixel_x=a_dict.get("pixel_x"),
+                pixel_y=a_dict.get("pixel_y"),
+                sky_ra=a_dict.get("sky_ra"),
+                sky_dec=a_dict.get("sky_dec"),
+                score=a_dict.get("score", 0.0),
+                properties=a_dict.get("properties", {}),
+            )
+        )
     return pr
 
 
@@ -88,7 +89,9 @@ class DistributedBridge:
         Returns the number of connected slaves.
         """
         self._thread = threading.Thread(
-            target=self._run_loop, daemon=True, name="distributed-bridge",
+            target=self._run_loop,
+            daemon=True,
+            name="distributed-bridge",
         )
         self._thread.start()
 
@@ -146,9 +149,7 @@ class DistributedBridge:
         pattern_results: list[PatternResult] = []
         for wr in work_results:
             if wr.error:
-                logger.warning(
-                    f"Work {wr.work_id[:8]} returned error: {wr.error}"
-                )
+                logger.warning(f"Work {wr.work_id[:8]} returned error: {wr.error}")
                 continue
 
             for pr_dict in wr.pattern_results:

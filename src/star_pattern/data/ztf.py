@@ -9,9 +9,9 @@ from typing import Any
 import numpy as np
 import requests
 
-from star_pattern.core.fits_handler import FITSImage
-from star_pattern.core.sky_region import SkyRegion, EpochImage
 from star_pattern.core.catalog import CatalogEntry, StarCatalog
+from star_pattern.core.fits_handler import FITSImage
+from star_pattern.core.sky_region import EpochImage, SkyRegion
 from star_pattern.data.base import DataSource
 from star_pattern.data.cache import DataCache
 from star_pattern.utils.logging import get_logger
@@ -79,9 +79,7 @@ class ZTFDataSource(DataSource):
             logger.warning("astroquery.ipac.irsa not available for ZTF queries")
             return StarCatalog(source="ztf")
 
-        logger.info(
-            f"Fetching ZTF light curves for ({region.ra:.3f}, {region.dec:.3f})"
-        )
+        logger.info(f"Fetching ZTF light curves for ({region.ra:.3f}, {region.dec:.3f})")
 
         # Query the ZTF objects table for sources in the region,
         # including pre-computed variability statistics.
@@ -121,9 +119,7 @@ class ZTFDataSource(DataSource):
             oid_rows[oid].append(row)
 
         # Fetch light curves for all sources in one bulk query
-        lightcurves = self._fetch_bulk_lightcurves(
-            region.ra, region.dec, radius_deg
-        )
+        lightcurves = self._fetch_bulk_lightcurves(region.ra, region.dec, radius_deg)
 
         entries = []
         n_with_stats = 0
@@ -184,7 +180,10 @@ class ZTFDataSource(DataSource):
 
         # Cache the catalog (including light curve data)
         self._cache.put_catalog(
-            "ztf", region.ra, region.dec, region.radius,
+            "ztf",
+            region.ra,
+            region.dec,
+            region.radius,
             [e.to_dict() for e in entries],
         )
 
@@ -244,9 +243,7 @@ class ZTFDataSource(DataSource):
                 result[oid][band] = []
             result[oid][band].append((mjd, mag, magerr))
 
-        logger.info(
-            f"Fetched light curves for {len(result)} ZTF sources"
-        )
+        logger.info(f"Fetched light curves for {len(result)} ZTF sources")
         return result
 
     @staticmethod
@@ -277,8 +274,7 @@ class ZTFDataSource(DataSource):
                 return None
 
         # filtercode mapping: zg=g, zr=r, zi=i (DR objects table uses string codes)
-        filter_map = {"zg": "g", "zr": "r", "zi": "i",
-                      "1": "g", "2": "r", "3": "i"}
+        filter_map = {"zg": "g", "zr": "r", "zi": "i", "1": "g", "2": "r", "3": "i"}
         raw_fc = str(best_row["filtercode"]).strip()
         filtercode = filter_map.get(raw_fc, raw_fc)
 
@@ -313,11 +309,13 @@ class ZTFDataSource(DataSource):
         results = []
         for oid, bands in lc_data.items():
             total_epochs = sum(len(pts) for pts in bands.values())
-            results.append({
-                "oid": oid,
-                "bands": bands,
-                "n_epochs": total_epochs,
-            })
+            results.append(
+                {
+                    "oid": oid,
+                    "bands": bands,
+                    "n_epochs": total_epochs,
+                }
+            )
         return results
 
     @retry_with_backoff(max_retries=2, base_delay=3.0)
@@ -374,10 +372,7 @@ class ZTFDataSource(DataSource):
                 continue
 
             # Filter by band
-            band_rows = [
-                r for r in rows
-                if r.get("filtercode", "").strip() == ztf_filter
-            ]
+            band_rows = [r for r in rows if r.get("filtercode", "").strip() == ztf_filter]
             if not band_rows:
                 logger.debug(f"No ZTF images in filter {ztf_filter}")
                 continue
@@ -427,19 +422,25 @@ class ZTFDataSource(DataSource):
                 # Check cache
                 epoch_key = filefracday
                 cached = self._cache.get_path(
-                    "ztf_epoch", region.ra, region.dec, region.radius,
-                    band=band, epoch=epoch_key,
+                    "ztf_epoch",
+                    region.ra,
+                    region.dec,
+                    region.radius,
+                    band=band,
+                    epoch=epoch_key,
                 )
                 if cached is not None:
                     try:
                         fits_img = FITSImage.from_file(str(cached))
-                        epoch_images.append(EpochImage(
-                            image=fits_img,
-                            mjd=obsjd - 2400000.5,  # JD to MJD
-                            band=band,
-                            source="ztf",
-                            metadata={"filefracday": filefracday},
-                        ))
+                        epoch_images.append(
+                            EpochImage(
+                                image=fits_img,
+                                mjd=obsjd - 2400000.5,  # JD to MJD
+                                band=band,
+                                source="ztf",
+                                metadata={"filefracday": filefracday},
+                            )
+                        )
                         continue
                     except Exception:
                         pass
@@ -470,24 +471,35 @@ class ZTFDataSource(DataSource):
 
                 # Save to cache
                 cache_path = self._cache.cache_path_for(
-                    "ztf_epoch", region.ra, region.dec, region.radius,
-                    band=band, epoch=epoch_key,
+                    "ztf_epoch",
+                    region.ra,
+                    region.dec,
+                    region.radius,
+                    band=band,
+                    epoch=epoch_key,
                 )
                 try:
                     cache_path.write_bytes(img_resp.content)
                     self._cache.put(
-                        "ztf_epoch", region.ra, region.dec, region.radius,
-                        cache_path, band=band, epoch=epoch_key,
+                        "ztf_epoch",
+                        region.ra,
+                        region.dec,
+                        region.radius,
+                        cache_path,
+                        band=band,
+                        epoch=epoch_key,
                         metadata={"obsjd": obsjd, "filefracday": filefracday},
                     )
                     fits_img = FITSImage.from_file(str(cache_path))
-                    epoch_images.append(EpochImage(
-                        image=fits_img,
-                        mjd=obsjd - 2400000.5,
-                        band=band,
-                        source="ztf",
-                        metadata={"filefracday": filefracday},
-                    ))
+                    epoch_images.append(
+                        EpochImage(
+                            image=fits_img,
+                            mjd=obsjd - 2400000.5,
+                            band=band,
+                            source="ztf",
+                            metadata={"filefracday": filefracday},
+                        )
+                    )
                 except Exception as e:
                     logger.debug(f"ZTF epoch image load failed: {e}")
                     continue

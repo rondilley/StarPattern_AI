@@ -40,11 +40,11 @@ def image_with_double_nucleus():
     data = rng.normal(100, 5, (256, 256)).astype(np.float64)
     # Extended galaxy envelope offset from center
     yy, xx = np.mgrid[-128:128, -128:128]
-    data += 200 * np.exp(-((xx - 5)**2 + (yy - 5)**2) / (2 * 30**2))
+    data += 200 * np.exp(-((xx - 5) ** 2 + (yy - 5) ** 2) / (2 * 30**2))
     # Nucleus 1 -- strong, compact, off-center
-    data += 1500 * np.exp(-((xx - 5)**2 + (yy - 5)**2) / (2 * 2**2))
+    data += 1500 * np.exp(-((xx - 5) ** 2 + (yy - 5) ** 2) / (2 * 2**2))
     # Nucleus 2 -- weaker, further from envelope center, creating asymmetry
-    data += 800 * np.exp(-((xx + 15)**2 + (yy + 10)**2) / (2 * 2**2))
+    data += 800 * np.exp(-((xx + 15) ** 2 + (yy + 10) ** 2) / (2 * 2**2))
     return data.astype(np.float32)
 
 

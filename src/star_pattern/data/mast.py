@@ -3,13 +3,12 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
 
 import numpy as np
 
-from star_pattern.core.fits_handler import FITSImage
-from star_pattern.core.sky_region import SkyRegion, EpochImage
 from star_pattern.core.catalog import CatalogEntry, StarCatalog
+from star_pattern.core.fits_handler import FITSImage
+from star_pattern.core.sky_region import EpochImage, SkyRegion
 from star_pattern.data.base import DataSource
 from star_pattern.data.cache import DataCache
 from star_pattern.utils.logging import get_logger
@@ -46,9 +45,9 @@ class MASTDataSource(DataSource):
         bands: list[str] | None = None,
     ) -> dict[str, FITSImage]:
         """Fetch HST/JWST images from MAST."""
-        from astroquery.mast import Observations
-        from astropy.coordinates import SkyCoord
         import astropy.units as u
+        from astropy.coordinates import SkyCoord
+        from astroquery.mast import Observations
 
         coord = SkyCoord(ra=region.ra * u.deg, dec=region.dec * u.deg, frame="icrs")
         images: dict[str, FITSImage] = {}
@@ -78,7 +77,7 @@ class MASTDataSource(DataSource):
             return images
 
         # Take first few observations
-        for row in filtered[:self.max_observations]:
+        for row in filtered[: self.max_observations]:
             obs_id = str(row["obs_id"])
             mission = str(row["obs_collection"])
 
@@ -136,9 +135,9 @@ class MASTDataSource(DataSource):
         except Exception as e:
             logger.debug(f"MAST catalog cache check failed: {e}")
 
-        from astroquery.mast import Catalogs
-        from astropy.coordinates import SkyCoord
         import astropy.units as u
+        from astropy.coordinates import SkyCoord
+        from astroquery.mast import Catalogs
 
         coord = SkyCoord(ra=region.ra * u.deg, dec=region.dec * u.deg, frame="icrs")
 
@@ -179,7 +178,10 @@ class MASTDataSource(DataSource):
 
         # Cache the catalog
         self._cache.put_catalog(
-            "mast", region.ra, region.dec, region.radius,
+            "mast",
+            region.ra,
+            region.dec,
+            region.radius,
             [e.to_dict() for e in entries],
         )
 
@@ -211,18 +213,16 @@ class MASTDataSource(DataSource):
             Dict mapping filter name -> list of EpochImage sorted by MJD.
         """
         try:
-            from astroquery.mast import Observations
-            from astropy.coordinates import SkyCoord
             import astropy.units as u
+            from astropy.coordinates import SkyCoord
+            from astroquery.mast import Observations
         except ImportError:
             logger.warning("astroquery.mast not available for MAST epoch queries")
             return {}
 
         coord = SkyCoord(ra=region.ra * u.deg, dec=region.dec * u.deg, frame="icrs")
 
-        logger.info(
-            f"Querying MAST epoch images for ({region.ra:.3f}, {region.dec:.3f})"
-        )
+        logger.info(f"Querying MAST epoch images for ({region.ra:.3f}, {region.dec:.3f})")
 
         try:
             obs_table = Observations.query_region(
@@ -306,23 +306,31 @@ class MASTDataSource(DataSource):
 
                 # Check cache
                 cached = self._cache.get_path(
-                    "mast_epoch", region.ra, region.dec, region.radius,
-                    band=filter_name, epoch=obs_id,
+                    "mast_epoch",
+                    region.ra,
+                    region.dec,
+                    region.radius,
+                    band=filter_name,
+                    epoch=obs_id,
                 )
                 if cached is not None:
                     try:
                         fits_img = FITSImage.from_file(str(cached))
                         fits_img = self._extract_cutout(
-                            fits_img, region.ra, region.dec,
+                            fits_img,
+                            region.ra,
+                            region.dec,
                             cutout_arcmin,
                         )
-                        epoch_images.append(EpochImage(
-                            image=fits_img,
-                            mjd=t_min,
-                            band=filter_name,
-                            source="mast",
-                            metadata={"obs_id": obs_id},
-                        ))
+                        epoch_images.append(
+                            EpochImage(
+                                image=fits_img,
+                                mjd=t_min,
+                                band=filter_name,
+                                source="mast",
+                                metadata={"obs_id": obs_id},
+                            )
+                        )
                         continue
                     except Exception:
                         pass
@@ -358,22 +366,31 @@ class MASTDataSource(DataSource):
 
                     # Cache the downloaded file
                     self._cache.put(
-                        "mast_epoch", region.ra, region.dec, region.radius,
-                        dl_path, band=filter_name, epoch=obs_id,
+                        "mast_epoch",
+                        region.ra,
+                        region.dec,
+                        region.radius,
+                        dl_path,
+                        band=filter_name,
+                        epoch=obs_id,
                         metadata={"t_min": t_min, "obs_id": obs_id},
                     )
 
                     fits_img = self._extract_cutout(
-                        fits_img, region.ra, region.dec,
+                        fits_img,
+                        region.ra,
+                        region.dec,
                         cutout_arcmin,
                     )
-                    epoch_images.append(EpochImage(
-                        image=fits_img,
-                        mjd=t_min,
-                        band=filter_name,
-                        source="mast",
-                        metadata={"obs_id": obs_id},
-                    ))
+                    epoch_images.append(
+                        EpochImage(
+                            image=fits_img,
+                            mjd=t_min,
+                            band=filter_name,
+                            source="mast",
+                            metadata={"obs_id": obs_id},
+                        )
+                    )
                 except Exception as e:
                     logger.debug(f"MAST epoch download failed for {obs_id}: {e}")
                     continue
@@ -390,7 +407,10 @@ class MASTDataSource(DataSource):
 
     @staticmethod
     def _extract_cutout(
-        fits_img: FITSImage, ra: float, dec: float, size_arcmin: float,
+        fits_img: FITSImage,
+        ra: float,
+        dec: float,
+        size_arcmin: float,
     ) -> FITSImage:
         """Extract a WCS-aware cutout from a full MAST frame.
 
@@ -400,14 +420,18 @@ class MASTDataSource(DataSource):
             return fits_img
 
         try:
+            import astropy.units as u
             from astropy.coordinates import SkyCoord
             from astropy.nddata import Cutout2D
-            import astropy.units as u
 
             center = SkyCoord(ra=ra * u.deg, dec=dec * u.deg, frame="icrs")
             size = size_arcmin * u.arcmin
             cutout = Cutout2D(
-                fits_img.data, center, size, wcs=fits_img.wcs, mode="partial",
+                fits_img.data,
+                center,
+                size,
+                wcs=fits_img.wcs,
+                mode="partial",
             )
             result = FITSImage.__new__(FITSImage)
             result.data = cutout.data.astype(np.float64)
@@ -421,7 +445,7 @@ class MASTDataSource(DataSource):
 
     def is_available(self) -> bool:
         try:
-            from astroquery.mast import Observations
+            from astroquery.mast import Observations  # noqa: F401 - availability probe
 
             return True
         except ImportError:

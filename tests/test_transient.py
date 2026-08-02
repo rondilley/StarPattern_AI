@@ -4,7 +4,6 @@ import numpy as np
 import pytest
 
 from star_pattern.core.catalog import CatalogEntry, StarCatalog
-from star_pattern.core.config import DetectionConfig
 from star_pattern.detection.transient import TransientDetector
 
 
@@ -147,7 +146,9 @@ def catalog_with_photometric_outliers():
 
 
 class TestTransientDetector:
-    def test_analyze_returns_expected_keys(self, transient_detector, catalog_with_astrometric_noise):
+    def test_analyze_returns_expected_keys(
+        self, transient_detector, catalog_with_astrometric_noise
+    ):
         result = transient_detector.analyze(catalog_with_astrometric_noise)
         assert "transient_score" in result
         assert "astrometric_outliers" in result
@@ -195,8 +196,11 @@ class TestTransientDetector:
         """Catalog with no Gaia-specific properties should return empty results."""
         entries = [
             CatalogEntry(
-                ra=180.0, dec=45.0, mag=15.0,
-                source="sdss", source_id=f"sdss_{i}",
+                ra=180.0,
+                dec=45.0,
+                mag=15.0,
+                source="sdss",
+                source_id=f"sdss_{i}",
             )
             for i in range(20)
         ]
@@ -212,20 +216,27 @@ class TestTransientDetector:
         for i in range(30):
             g = float(rng.uniform(15, 20))
             r = g - float(rng.uniform(0.3, 0.8))
-            entries.append(CatalogEntry(
-                ra=180.0 + rng.uniform(-0.01, 0.01),
-                dec=45.0 + rng.uniform(-0.01, 0.01),
-                mag=r,
-                source="sdss",
-                source_id=f"sdss_{i}",
-                properties={"g": g, "r": r},
-            ))
+            entries.append(
+                CatalogEntry(
+                    ra=180.0 + rng.uniform(-0.01, 0.01),
+                    dec=45.0 + rng.uniform(-0.01, 0.01),
+                    mag=r,
+                    source="sdss",
+                    source_id=f"sdss_{i}",
+                    properties={"g": g, "r": r},
+                )
+            )
         # Add one extreme outlier
-        entries.append(CatalogEntry(
-            ra=180.0, dec=45.0, mag=17.0,
-            source="sdss", source_id="sdss_outlier",
-            properties={"g": 22.0, "r": 17.0},  # g-r = 5.0, extreme
-        ))
+        entries.append(
+            CatalogEntry(
+                ra=180.0,
+                dec=45.0,
+                mag=17.0,
+                source="sdss",
+                source_id="sdss_outlier",
+                properties={"g": 22.0, "r": 17.0},  # g-r = 5.0, extreme
+            )
+        )
         catalog = StarCatalog(entries=entries, source="sdss")
         result = transient_detector.analyze(catalog)
         # Should have at least processed photometric data (not empty due to key mismatch)
@@ -239,14 +250,16 @@ class TestTransientDetector:
             g = float(rng.uniform(14, 19))
             bp = g + float(rng.uniform(-0.2, 0.5))
             rp = g - float(rng.uniform(0.1, 0.8))
-            entries.append(CatalogEntry(
-                ra=180.0 + rng.uniform(-0.01, 0.01),
-                dec=45.0 + rng.uniform(-0.01, 0.01),
-                mag=g,
-                source="gaia",
-                source_id=f"gaia_{i}",
-                properties={"BP": bp, "RP": rp, "bp_rp": bp - rp},
-            ))
+            entries.append(
+                CatalogEntry(
+                    ra=180.0 + rng.uniform(-0.01, 0.01),
+                    dec=45.0 + rng.uniform(-0.01, 0.01),
+                    mag=g,
+                    source="gaia",
+                    source_id=f"gaia_{i}",
+                    properties={"BP": bp, "RP": rp, "bp_rp": bp - rp},
+                )
+            )
         catalog = StarCatalog(entries=entries, source="gaia")
         result = transient_detector.analyze(catalog)
         # Photometric outlier detection should have processed entries

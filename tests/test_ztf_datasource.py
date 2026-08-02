@@ -6,8 +6,11 @@ Tests requiring IRSA TAP access use pytest.skip() when unavailable.
 
 import pytest
 
-from star_pattern.data.ztf import ZTFDataSource
 from star_pattern.core.sky_region import SkyRegion
+from star_pattern.data.ztf import ZTFDataSource
+
+# Requires live external services; excluded from the offline CI run.
+pytestmark = pytest.mark.network
 
 
 class TestZTFDataSource:
@@ -35,6 +38,7 @@ class TestZTFDataSource:
         src = ZTFDataSource()
         try:
             from astroquery.ipac.irsa import Irsa  # noqa: F401
+
             assert src.is_available() is True
         except ImportError:
             assert src.is_available() is False

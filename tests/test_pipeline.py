@@ -1,19 +1,15 @@
 """Tests for pipeline orchestration."""
 
 import json
-import pytest
-from pathlib import Path
 
 import numpy as np
 
-from star_pattern.core.config import PipelineConfig, DetectionConfig
-from star_pattern.core.fits_handler import FITSImage
-from star_pattern.core.sky_region import SkyRegion, RegionData
-from star_pattern.discovery.genome import DetectionGenome
+from star_pattern.core.config import DetectionConfig, PipelineConfig
 from star_pattern.discovery.fitness import FitnessEvaluator
+from star_pattern.discovery.genome import DetectionGenome
 from star_pattern.evaluation.metrics import Anomaly, PatternResult
-from star_pattern.visualization.report import DiscoveryReport
 from star_pattern.utils.run_manager import RunManager
+from star_pattern.visualization.report import DiscoveryReport
 
 
 class TestRunManager:
@@ -216,7 +212,10 @@ class TestFitnessEvaluatorWithGenome:
 
 class TestAutonomousSavesImages:
     def test_autonomous_saves_images(
-        self, sample_config, sample_region_data, tmp_path,
+        self,
+        sample_config,
+        sample_region_data,
+        tmp_path,
     ):
         """Run detection on a region and verify images are saved."""
         from star_pattern.pipeline.autonomous import AutonomousDiscovery
@@ -236,7 +235,9 @@ class TestAutonomousSavesImages:
             assert len(png_files) > 0, "Expected overlay images to be saved"
 
     def test_autonomous_generates_report(
-        self, sample_config, tmp_path,
+        self,
+        sample_config,
+        tmp_path,
     ):
         """Verify report generation produces files."""
         from star_pattern.pipeline.autonomous import AutonomousDiscovery
@@ -246,9 +247,7 @@ class TestAutonomousSavesImages:
         pipeline = AutonomousDiscovery(sample_config, run_manager=run_mgr)
 
         # Manually add a finding so report has content
-        pipeline.findings.append(
-            PatternResult(180.0, 45.0, "lens", 0.8, 0.6)
-        )
+        pipeline.findings.append(PatternResult(180.0, 45.0, "lens", 0.8, 0.6))
         pipeline.cycle = 1
 
         report_paths = pipeline._generate_report()
@@ -312,7 +311,7 @@ class TestWideFieldConfig:
 class TestStarCatalogMerge:
     def test_merge_deduplicates(self, sample_catalog):
         """Merge deduplicates by source_id."""
-        from star_pattern.core.catalog import StarCatalog, CatalogEntry
+        from star_pattern.core.catalog import CatalogEntry, StarCatalog
 
         # Create a second catalog with some overlapping IDs
         entries = [
@@ -354,7 +353,14 @@ class TestPixelScaleDetection:
         assert abs(ps - 0.4) < 0.01  # Our fixture uses 0.4 arcsec/pixel
 
     def test_lens_adapts_radii(self):
-        """LensDetector adapts radii when pixel_scale_arcsec is given."""
+        """LensDetector adapts radii when pixel_scale_arcsec is given.
+
+        The adapted radii are per-image values, so they are checked on the
+        value the detector computes for one image rather than on instance
+        attributes. Writing them back to the instance would leak one
+        image's pixel scale into every later image; see
+        tests/test_detector_statelessness.py.
+        """
         from star_pattern.detection.lens_detector import LensDetector
 
         det = LensDetector()
@@ -362,15 +368,20 @@ class TestPixelScaleDetection:
         assert det.ring_min_radius == 10
         assert det.ring_max_radius == 80
 
-        # Create synthetic image data
-        data = np.random.default_rng(42).normal(100, 10, (256, 256))
+        # With no pixel scale, the configured defaults are used as-is.
+        assert det._radii_for(None).ring_min == 10
+        assert det._radii_for(None).ring_max == 80
 
-        # Detect with a pixel scale of 0.2 arcsec/pixel
+        # At 0.2 arcsec/pixel: 3.0 / 0.2 = 15 min, 25.0 / 0.2 = 125 max.
+        scaled = det._radii_for(0.2)
+        assert scaled.ring_min == 15
+        assert scaled.ring_max == 125
+
+        # Running a detection must not change the configured defaults.
+        data = np.random.default_rng(42).normal(100, 10, (256, 256))
         det.detect(data.astype(np.float32), pixel_scale_arcsec=0.2)
-        # 3.0 arcsec / 0.2 = 15 pixels min
-        assert det.ring_min_radius == 15
-        # 25.0 arcsec / 0.2 = 125 pixels max
-        assert det.ring_max_radius == 125
+        assert det.ring_min_radius == 10
+        assert det.ring_max_radius == 80
 
 
 class TestReportEvolutionHistory:
@@ -400,6 +411,7 @@ class TestSubDetectionExtraction:
             _extract_sub_detections,
             _total_sub_detections,
         )
+
         assert _extract_sub_detections({}) == {}
         assert _extract_sub_detections(None) == {}
         assert _total_sub_detections({}) == 0
@@ -555,6 +567,7 @@ class TestCategorizeFindings:
 
     def test_empty(self):
         from star_pattern.visualization.mosaic import _categorize_findings
+
         new, known, low = _categorize_findings([])
         assert new == []
         assert known == []
@@ -581,7 +594,8 @@ class TestReportSubDetections:
             },
         }
         path = report.generate_markdown_report(
-            [f], run_metadata={"n_regions": 1},
+            [f],
+            run_metadata={"n_regions": 1},
         )
         content = path.read_text()
         # Feature descriptions should appear as itemized list
@@ -611,7 +625,8 @@ class TestReportSubDetections:
         report = DiscoveryReport(tmp_path / "reports")
         f1 = PatternResult(180.0, 45.0, "lens", 0.8, 0.6)
         f1.metadata["local_evaluation"] = {
-            "verdict": "real", "significance_rating": 7,
+            "verdict": "real",
+            "significance_rating": 7,
         }
         f1.details = {
             "sources": {"n_sources": 50},
@@ -621,14 +636,16 @@ class TestReportSubDetections:
         }
         f2 = PatternResult(90.0, 30.0, "galaxy", 0.7, 0.5)
         f2.metadata["local_evaluation"] = {
-            "verdict": "real", "significance_rating": 6,
+            "verdict": "real",
+            "significance_rating": 6,
         }
         f2.details = {
             "sources": {"n_sources": 80},
             "lens": {"arcs": [{"radius": 10}]},
         }
         path = report.generate_markdown_report(
-            [f1, f2], run_metadata={"n_regions": 2},
+            [f1, f2],
+            run_metadata={"n_regions": 2},
         )
         content = path.read_text()
         # Summary should have narrative counts, not raw source totals
@@ -640,8 +657,7 @@ class TestReportSubDetections:
 class TestReportFindingStructure:
     """Test the new finding-number and narrative structure."""
 
-    def _make_finding(self, ra, dec, dtype, score, sig_rating, verdict,
-                      cross_matches=None):
+    def _make_finding(self, ra, dec, dtype, score, sig_rating, verdict, cross_matches=None):
         f = PatternResult(ra, dec, dtype, score, score * 0.8)
         f.metadata["local_evaluation"] = {
             "verdict": verdict,
@@ -654,8 +670,9 @@ class TestReportFindingStructure:
     def test_finding_numbers_in_report(self, tmp_path):
         report = DiscoveryReport(tmp_path / "reports")
         f1 = self._make_finding(180.0, 45.0, "lens", 0.9, 8, "real")
-        f2 = self._make_finding(90.0, 30.0, "galaxy", 0.7, 6, "real",
-                                cross_matches=[{"name": "NGC 1234"}])
+        f2 = self._make_finding(
+            90.0, 30.0, "galaxy", 0.7, 6, "real", cross_matches=[{"name": "NGC 1234"}]
+        )
         f3 = self._make_finding(45.0, 15.0, "noise", 0.2, 1, "artifact")
 
         path = report.generate_markdown_report([f1, f2, f3])
@@ -747,9 +764,7 @@ class TestAnomalyDataclass:
     def test_pattern_result_anomalies_field(self):
         result = PatternResult(180.0, 45.0, "lens", 0.8)
         assert result.anomalies == []
-        result.anomalies.append(
-            Anomaly(anomaly_type="lens_arc", detector="lens", score=4.0)
-        )
+        result.anomalies.append(Anomaly(anomaly_type="lens_arc", detector="lens", score=4.0))
         assert len(result.anomalies) == 1
 
     def test_pattern_result_to_dict_with_anomalies(self):
@@ -770,11 +785,13 @@ class TestExtractAnomalies:
 
     def test_empty_detection(self):
         from star_pattern.pipeline.autonomous import _extract_anomalies
+
         result = _extract_anomalies({}, None)
         assert result == []
 
     def test_lens_arcs_extracted(self):
         from star_pattern.pipeline.autonomous import _extract_anomalies
+
         detection = {
             "lens": {
                 "central_source": {"x": 128, "y": 128},
@@ -799,11 +816,17 @@ class TestExtractAnomalies:
 
     def test_catalog_based_detectors(self):
         from star_pattern.pipeline.autonomous import _extract_anomalies
+
         detection = {
             "kinematic": {
                 "comoving_groups": [
-                    {"mean_ra": 180.0, "mean_dec": 45.0, "n_members": 7,
-                     "mean_pmra": 3.2, "mean_pmdec": -1.1},
+                    {
+                        "mean_ra": 180.0,
+                        "mean_dec": 45.0,
+                        "n_members": 7,
+                        "mean_pmra": 3.2,
+                        "mean_pmdec": -1.1,
+                    },
                 ],
                 "stream_candidates": [
                     {"mean_ra": 180.1, "mean_dec": 45.1, "n_members": 12},
@@ -814,13 +837,16 @@ class TestExtractAnomalies:
             },
             "variability": {
                 "variable_candidates": [
-                    {"ra": 180.3, "dec": 45.3, "score": 0.85,
-                     "classification": "eclipsing_binary",
-                     "variability_index": {"chi2_reduced": 5.0}},
+                    {
+                        "ra": 180.3,
+                        "dec": 45.3,
+                        "score": 0.85,
+                        "classification": "eclipsing_binary",
+                        "variability_index": {"chi2_reduced": 5.0},
+                    },
                 ],
                 "periodic_candidates": [
-                    {"ra": 180.4, "dec": 45.4, "period": 2.34, "power": 0.92,
-                     "fap": 0.001},
+                    {"ra": 180.4, "dec": 45.4, "period": 2.34, "power": 0.92, "fap": 0.001},
                 ],
             },
         }
@@ -841,6 +867,7 @@ class TestExtractAnomalies:
 
     def test_mixed_detectors(self):
         from star_pattern.pipeline.autonomous import _extract_anomalies
+
         detection = {
             "lens": {
                 "arcs": [{"radius": 20, "snr": 5.0}],
@@ -872,10 +899,12 @@ class TestExtractAnomalies:
         assert scores == sorted(scores, reverse=True)
 
     def test_system_protection_limits(self):
-        from star_pattern.pipeline.autonomous import _extract_anomalies
         from star_pattern.evaluation.confidence import (
-            _MAX_PER_DETECTOR_SYSTEM, _MAX_PER_REGION_SYSTEM,
+            _MAX_PER_DETECTOR_SYSTEM,
+            _MAX_PER_REGION_SYSTEM,
         )
+        from star_pattern.pipeline.autonomous import _extract_anomalies
+
         # Verify system protection limits exist at expected values
         assert _MAX_PER_DETECTOR_SYSTEM == 500
         assert _MAX_PER_REGION_SYSTEM == 500
@@ -884,8 +913,7 @@ class TestExtractAnomalies:
         detection = {
             "distribution": {
                 "overdensities": [
-                    {"x": i, "y": i, "sigma": 4.0 + float(i) * 0.1}
-                    for i in range(30)
+                    {"x": i, "y": i, "sigma": 4.0 + float(i) * 0.1} for i in range(30)
                 ],
             },
         }
@@ -908,6 +936,7 @@ class TestExtractAnomalies:
 
     def test_classical_arcs_use_center_keys(self):
         from star_pattern.pipeline.autonomous import _extract_anomalies
+
         detection = {
             "classical": {
                 "hough_arcs": [
@@ -926,6 +955,7 @@ class TestExtractAnomalies:
 
     def test_classical_arcs_skip_missing_coords(self):
         from star_pattern.pipeline.autonomous import _extract_anomalies
+
         detection = {
             "classical": {
                 "hough_arcs": [
@@ -938,6 +968,7 @@ class TestExtractAnomalies:
 
     def test_population_candidates(self):
         from star_pattern.pipeline.autonomous import _extract_anomalies
+
         detection = {
             "population": {
                 "n_sources_with_color": 60,
@@ -975,20 +1006,29 @@ class TestReportAnomalyTable:
         }
         f.anomalies = [
             Anomaly(
-                anomaly_type="lens_arc", detector="lens",
-                pixel_x=100, pixel_y=200,
-                sky_ra=192.654, sky_dec=26.609,
-                score=4.2, properties={"radius": 15, "angle_span": 120},
+                anomaly_type="lens_arc",
+                detector="lens",
+                pixel_x=100,
+                pixel_y=200,
+                sky_ra=192.654,
+                sky_dec=26.609,
+                score=4.2,
+                properties={"radius": 15, "angle_span": 120},
             ),
             Anomaly(
-                anomaly_type="overdensity", detector="distribution",
-                pixel_x=50, pixel_y=50,
-                sky_ra=192.658, sky_dec=26.612,
-                score=3.8, properties={"radius_px": 20, "n_sources": 12},
+                anomaly_type="overdensity",
+                detector="distribution",
+                pixel_x=50,
+                pixel_y=50,
+                sky_ra=192.658,
+                sky_dec=26.612,
+                score=3.8,
+                properties={"radius_px": 20, "n_sources": 12},
             ),
         ]
         path = report.generate_markdown_report(
-            [f], run_metadata={"n_regions": 1},
+            [f],
+            run_metadata={"n_regions": 1},
         )
         content = path.read_text()
         assert "Detected anomalies (2 total)" in content
@@ -1001,7 +1041,8 @@ class TestReportAnomalyTable:
         report = DiscoveryReport(tmp_path / "reports")
         f1 = PatternResult(180.0, 45.0, "lens", 0.8, 0.6)
         f1.metadata["local_evaluation"] = {
-            "verdict": "real", "significance_rating": 7,
+            "verdict": "real",
+            "significance_rating": 7,
         }
         f1.anomalies = [
             Anomaly(anomaly_type="lens_arc", detector="lens", score=4.0),
@@ -1010,13 +1051,15 @@ class TestReportAnomalyTable:
         ]
         f2 = PatternResult(90.0, 30.0, "galaxy", 0.7, 0.5)
         f2.metadata["local_evaluation"] = {
-            "verdict": "real", "significance_rating": 6,
+            "verdict": "real",
+            "significance_rating": 6,
         }
         f2.anomalies = [
             Anomaly(anomaly_type="tidal_feature", detector="galaxy", score=2.0),
         ]
         path = report.generate_markdown_report(
-            [f1, f2], run_metadata={"n_regions": 2},
+            [f1, f2],
+            run_metadata={"n_regions": 2},
         )
         content = path.read_text()
         assert "Anomaly summary:" in content
@@ -1026,7 +1069,8 @@ class TestReportAnomalyTable:
         report = DiscoveryReport(tmp_path / "reports")
         f = PatternResult(180.0, 45.0, "lens", 0.8, 0.6)
         f.metadata["local_evaluation"] = {
-            "verdict": "real", "significance_rating": 7,
+            "verdict": "real",
+            "significance_rating": 7,
         }
         # No anomalies set
         path = report.generate_markdown_report([f])
@@ -1038,8 +1082,9 @@ class TestMosaicAnomalyCutouts:
     """Test that mosaic shows anomaly cutouts when available."""
 
     def test_mosaic_with_anomalies(self):
-        from star_pattern.visualization.mosaic import create_discovery_mosaic
         import matplotlib.pyplot as plt
+
+        from star_pattern.visualization.mosaic import create_discovery_mosaic
 
         f = PatternResult(180.0, 45.0, "lens", 0.8, 0.6)
         f.metadata["local_evaluation"] = {
@@ -1048,13 +1093,17 @@ class TestMosaicAnomalyCutouts:
         }
         f.anomalies = [
             Anomaly(
-                anomaly_type="lens_arc", detector="lens",
-                pixel_x=100, pixel_y=200,
+                anomaly_type="lens_arc",
+                detector="lens",
+                pixel_x=100,
+                pixel_y=200,
                 score=4.2,
             ),
             Anomaly(
-                anomaly_type="overdensity", detector="distribution",
-                pixel_x=50, pixel_y=50,
+                anomaly_type="overdensity",
+                detector="distribution",
+                pixel_x=50,
+                pixel_y=50,
                 score=3.8,
             ),
         ]
@@ -1070,8 +1119,9 @@ class TestMosaicAnomalyCutouts:
         plt.close(fig)
 
     def test_mosaic_fallback_no_anomalies(self):
-        from star_pattern.visualization.mosaic import create_discovery_mosaic
         import matplotlib.pyplot as plt
+
+        from star_pattern.visualization.mosaic import create_discovery_mosaic
 
         f = PatternResult(180.0, 45.0, "lens", 0.8, 0.6)
         f.metadata["local_evaluation"] = {
@@ -1087,8 +1137,9 @@ class TestMosaicAnomalyCutouts:
         plt.close(fig)
 
     def test_mosaic_catalog_only_anomalies(self):
-        from star_pattern.visualization.mosaic import create_discovery_mosaic
         import matplotlib.pyplot as plt
+
+        from star_pattern.visualization.mosaic import create_discovery_mosaic
 
         f = PatternResult(180.0, 45.0, "kinematic", 0.7)
         f.metadata["local_evaluation"] = {
@@ -1097,8 +1148,10 @@ class TestMosaicAnomalyCutouts:
         }
         f.anomalies = [
             Anomaly(
-                anomaly_type="comoving_group", detector="kinematic",
-                sky_ra=180.0, sky_dec=45.0,
+                anomaly_type="comoving_group",
+                detector="kinematic",
+                sky_ra=180.0,
+                sky_dec=45.0,
                 score=3.5,
                 properties={"n_members": 7, "mean_pmra": 3.2, "mean_pmdec": -1.1},
             ),

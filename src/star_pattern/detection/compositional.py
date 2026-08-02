@@ -78,7 +78,7 @@ def _wavelet_residual(
     # Simple a-trous: progressively larger Gaussian filters
     prev = data.copy()
     for s in range(scale):
-        sigma = 2 ** s
+        sigma = 2**s
         smoothed = ndimage.gaussian_filter(prev, sigma=sigma)
         residual = prev - smoothed
         prev = smoothed
@@ -119,7 +119,7 @@ def _convolve_kernel(
             -kernel_size // 2 : kernel_size // 2 + 1,
             -kernel_size // 2 : kernel_size // 2 + 1,
         ]
-        r = np.sqrt(x ** 2 + y ** 2)
+        r = np.sqrt(x**2 + y**2)
         kernel = (r <= kernel_size / 2).astype(np.float64)
         kernel /= max(kernel.sum(), 1)
         result = ndimage.convolve(image.astype(np.float64), kernel)
@@ -449,18 +449,18 @@ class ComposedPipeline:
         current = data.copy()
         for op in self.spec.operations:
             current, context = self._registry.execute(op, current, context)
-            intermediate.append({
-                "op": op.name,
-                "params": op.params,
-                "shape": list(current.shape),
-                "mean": float(np.mean(current)),
-                "std": float(np.std(current)),
-            })
+            intermediate.append(
+                {
+                    "op": op.name,
+                    "params": op.params,
+                    "shape": list(current.shape),
+                    "mean": float(np.mean(current)),
+                    "std": float(np.std(current)),
+                }
+            )
 
         # Score the final output
-        scorer = _SCORERS.get(
-            self.spec.score_method, ComposedPipelineScorer.component_count
-        )
+        scorer = _SCORERS.get(self.spec.score_method, ComposedPipelineScorer.component_count)
         try:
             score = scorer(current, context)
         except Exception as e:
@@ -468,9 +468,11 @@ class ComposedPipeline:
             score = 0.0
 
         description = " -> ".join(
-            f"{op.name}({', '.join(f'{k}={v}' for k, v in op.params.items())})"
-            if op.params
-            else op.name
+            (
+                f"{op.name}({', '.join(f'{k}={v}' for k, v in op.params.items())})"
+                if op.params
+                else op.name
+            )
             for op in self.spec.operations
         )
         description += f" -> score:{self.spec.score_method}"
@@ -479,9 +481,5 @@ class ComposedPipeline:
             "composed_score": float(np.clip(score, 0, 1)),
             "pipeline_description": description,
             "intermediate_results": intermediate,
-            "context": {
-                k: v
-                for k, v in context.items()
-                if not isinstance(v, np.ndarray)
-            },
+            "context": {k: v for k, v in context.items() if not isinstance(v, np.ndarray)},
         }

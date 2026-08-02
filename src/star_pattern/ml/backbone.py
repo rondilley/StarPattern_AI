@@ -2,12 +2,10 @@
 
 from __future__ import annotations
 
-from typing import Any
-
 import numpy as np
 
-from star_pattern.utils.logging import get_logger
 from star_pattern.utils.gpu import get_device
+from star_pattern.utils.logging import get_logger
 
 logger = get_logger("ml.backbone")
 
@@ -76,9 +74,7 @@ class BackboneWrapper:
                 transforms.Resize(224),
                 transforms.CenterCrop(224),
                 transforms.ToTensor(),
-                transforms.Normalize(
-                    mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]
-                ),
+                transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
             ]
         )
 

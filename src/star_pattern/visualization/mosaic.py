@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
-import numpy as np
 import matplotlib.pyplot as plt
+import numpy as np
 from matplotlib.figure import Figure
 from matplotlib.patches import Circle
 
@@ -51,6 +51,7 @@ def _load_fits_from_metadata(finding: PatternResult) -> FITSImage | None:
 
     try:
         from star_pattern.data.cache import DataCache
+
         cache = DataCache()
         # Try common bands in priority order
         for band in ("r", "i", "g", "z"):
@@ -284,14 +285,24 @@ def _draw_panel_overlays(ax: plt.Axes, finding: PatternResult) -> None:
         galaxies = positions[~star_mask]
         if len(stars) > 0:
             ax.scatter(
-                stars[:, 0], stars[:, 1], s=8, marker="*",
-                facecolors="none", edgecolors="cyan", linewidth=0.4,
+                stars[:, 0],
+                stars[:, 1],
+                s=8,
+                marker="*",
+                facecolors="none",
+                edgecolors="cyan",
+                linewidth=0.4,
                 zorder=5,
             )
         if len(galaxies) > 0:
             ax.scatter(
-                galaxies[:, 0], galaxies[:, 1], s=12, marker="o",
-                facecolors="none", edgecolors="lime", linewidth=0.4,
+                galaxies[:, 0],
+                galaxies[:, 1],
+                s=12,
+                marker="o",
+                facecolors="none",
+                edgecolors="lime",
+                linewidth=0.4,
                 zorder=5,
             )
 
@@ -304,16 +315,25 @@ def _draw_panel_overlays(ax: plt.Axes, finding: PatternResult) -> None:
             ax.plot(cx, cy, "r+", markersize=8, markeredgewidth=1.5, zorder=6)
         for arc in lens.get("arcs", []):
             circle = Circle(
-                (cx, cy), arc["radius"],
-                fill=False, edgecolor="yellow", linewidth=0.8,
-                linestyle="--", alpha=0.6, zorder=6,
+                (cx, cy),
+                arc["radius"],
+                fill=False,
+                edgecolor="yellow",
+                linewidth=0.8,
+                linestyle="--",
+                alpha=0.6,
+                zorder=6,
             )
             ax.add_patch(circle)
         for ring in lens.get("rings", []):
             color = "lime" if ring.get("is_complete_ring") else "orange"
             circle = Circle(
-                (cx, cy), ring["radius"],
-                fill=False, edgecolor=color, linewidth=1.2, zorder=6,
+                (cx, cy),
+                ring["radius"],
+                fill=False,
+                edgecolor=color,
+                linewidth=1.2,
+                zorder=6,
             )
             ax.add_patch(circle)
 
@@ -323,9 +343,13 @@ def _draw_panel_overlays(ax: plt.Axes, finding: PatternResult) -> None:
         for feat in galaxy.get("tidal_features", []):
             radius = max(4, feat.get("extent_px", 20))
             circle = Circle(
-                (feat["x"], feat["y"]), radius,
-                fill=False, edgecolor="magenta", linewidth=0.8,
-                linestyle="--", zorder=6,
+                (feat["x"], feat["y"]),
+                radius,
+                fill=False,
+                edgecolor="magenta",
+                linewidth=0.8,
+                linestyle="--",
+                zorder=6,
             )
             ax.add_patch(circle)
         nuclei = galaxy.get("merger_nuclei", [])
@@ -338,8 +362,12 @@ def _draw_panel_overlays(ax: plt.Axes, finding: PatternResult) -> None:
         for od in dist.get("overdensities", []):
             radius = max(3, od.get("radius_px", 10))
             circle = Circle(
-                (od["x"], od["y"]), radius,
-                fill=False, edgecolor="red", linewidth=0.8, zorder=6,
+                (od["x"], od["y"]),
+                radius,
+                fill=False,
+                edgecolor="red",
+                linewidth=0.8,
+                zorder=6,
             )
             ax.add_patch(circle)
 
@@ -348,9 +376,13 @@ def _draw_panel_overlays(ax: plt.Axes, finding: PatternResult) -> None:
     if classical.get("gabor_score", 0) > 0.15 or classical.get("arc_score", 0) > 0.15:
         for arc in classical.get("hough_arcs", []):
             circle = Circle(
-                (arc["cx"], arc["cy"]), arc["radius"],
-                fill=False, edgecolor="orange", linewidth=0.8,
-                linestyle="--", zorder=6,
+                (arc["cx"], arc["cy"]),
+                arc["radius"],
+                fill=False,
+                edgecolor="orange",
+                linewidth=0.8,
+                linestyle="--",
+                zorder=6,
             )
             ax.add_patch(circle)
 
@@ -363,15 +395,25 @@ def _draw_panel_overlays(ax: plt.Axes, finding: PatternResult) -> None:
             color = scale_colors[min(scale_idx, len(scale_colors) - 1)]
             radius = max(2, det.get("area_px", 25) ** 0.5)
             circle = Circle(
-                (det["x"], det["y"]), radius,
-                fill=False, edgecolor=color, linewidth=0.6, alpha=0.7,
+                (det["x"], det["y"]),
+                radius,
+                fill=False,
+                edgecolor=color,
+                linewidth=0.6,
+                alpha=0.7,
                 zorder=5,
             )
             ax.add_patch(circle)
         for ms in wavelet.get("multiscale_objects", []):
             ax.plot(
-                ms["x"], ms["y"], "s", color="white", markersize=4,
-                markeredgewidth=0.8, markerfacecolor="none", zorder=6,
+                ms["x"],
+                ms["y"],
+                "s",
+                color="white",
+                markersize=4,
+                markeredgewidth=0.8,
+                markerfacecolor="none",
+                zorder=6,
             )
 
     # Sersic: residual features (white dotted circles)
@@ -380,9 +422,13 @@ def _draw_panel_overlays(ax: plt.Axes, finding: PatternResult) -> None:
         for feat in sersic.get("residual_features", []):
             radius = max(3, feat.get("area_px", 50) ** 0.5)
             circle = Circle(
-                (feat["x"], feat["y"]), radius,
-                fill=False, edgecolor="white", linewidth=0.6,
-                linestyle=":", zorder=5,
+                (feat["x"], feat["y"]),
+                radius,
+                fill=False,
+                edgecolor="white",
+                linewidth=0.6,
+                linestyle=":",
+                zorder=5,
             )
             ax.add_patch(circle)
 
@@ -391,18 +437,29 @@ def _draw_panel_overlays(ax: plt.Axes, finding: PatternResult) -> None:
     if transient.get("transient_score", 0) > 0.15:
         for out in transient.get("flux_outliers", []):
             ax.plot(
-                out["x"], out["y"], "^", color="#FF5722",
-                markersize=5, zorder=6,
+                out["x"],
+                out["y"],
+                "^",
+                color="#FF5722",
+                markersize=5,
+                zorder=6,
             )
         for out in transient.get("color_outliers", []):
             ax.plot(
-                out["x"], out["y"], "v", color="#FF9800",
-                markersize=4, zorder=6,
+                out["x"],
+                out["y"],
+                "v",
+                color="#FF9800",
+                markersize=4,
+                zorder=6,
             )
 
 
 def _has_source_at_center(
-    image: FITSImage, px: float, py: float, min_snr: float = 2.0,
+    image: FITSImage,
+    px: float,
+    py: float,
+    min_snr: float = 2.0,
 ) -> bool:
     """Check if there is a detectable source at the given pixel location.
 
@@ -486,8 +543,11 @@ def _collect_top_anomalies(
     # multiscale objects are diffuse structures that won't pass a
     # point-source signal check. Always include them.
     _EXTENDED_TYPES = {
-        "tidal_feature", "sersic_residual", "multiscale_object",
-        "overdensity", "merger",
+        "tidal_feature",
+        "sersic_residual",
+        "multiscale_object",
+        "overdensity",
+        "merger",
     }
 
     # Filter: skip point-source anomalies whose cutout center has no
@@ -527,7 +587,9 @@ def _collect_top_anomalies(
 
 
 def _sky_to_pixel(
-    ra: float, dec: float, image: FITSImage,
+    ra: float,
+    dec: float,
+    image: FITSImage,
 ) -> tuple[float | None, float | None]:
     """Convert RA/Dec to pixel coords on a specific image via WCS.
 
@@ -536,8 +598,8 @@ def _sky_to_pixel(
     if image.wcs is None:
         return None, None
     try:
-        from astropy.coordinates import SkyCoord
         import astropy.units as u
+        from astropy.coordinates import SkyCoord
 
         coord = SkyCoord(ra=ra * u.deg, dec=dec * u.deg)
         px, py = image.wcs.world_to_pixel(coord)
@@ -551,7 +613,8 @@ def _sky_to_pixel(
 
 
 def _resolve_pixel_coords(
-    anomaly: Any, image: FITSImage | None,
+    anomaly: Any,
+    image: FITSImage | None,
 ) -> tuple[float | None, float | None]:
     """Resolve pixel coordinates for an anomaly on a given image.
 
@@ -562,11 +625,7 @@ def _resolve_pixel_coords(
     if anomaly.pixel_x is not None and anomaly.pixel_y is not None:
         return anomaly.pixel_x, anomaly.pixel_y
 
-    if (
-        image is not None
-        and anomaly.sky_ra is not None
-        and anomaly.sky_dec is not None
-    ):
+    if image is not None and anomaly.sky_ra is not None and anomaly.sky_dec is not None:
         return _sky_to_pixel(anomaly.sky_ra, anomaly.sky_dec, image)
 
     return None, None
@@ -597,8 +656,13 @@ def _draw_anomaly_cutout(
         for k, v in list(anomaly.properties.items())[:4]:
             info_parts.append(f"{k}={v}")
         ax.text(
-            0.5, 0.5, "\n".join(info_parts),
-            ha="center", va="center", fontsize=7, color="white",
+            0.5,
+            0.5,
+            "\n".join(info_parts),
+            ha="center",
+            va="center",
+            fontsize=7,
+            color="white",
             transform=ax.transAxes,
         )
         return
@@ -613,8 +677,11 @@ def _draw_anomaly_cutout(
     # cutout to show the full diffuse structure.
     feature_area = anomaly.properties.get("area", anomaly.properties.get("area_px", 0))
     is_extended = anomaly.anomaly_type in (
-        "tidal_feature", "sersic_residual", "multiscale_object",
-        "overdensity", "merger",
+        "tidal_feature",
+        "sersic_residual",
+        "multiscale_object",
+        "overdensity",
+        "merger",
     )
 
     if is_extended and feature_area > 100:
@@ -639,16 +706,15 @@ def _draw_anomaly_cutout(
         search_region = image.data[sy0:sy1, sx0:sx1]
         if search_region.size > 0:
             peak_idx = np.unravel_index(
-                np.nanargmax(search_region), search_region.shape,
+                np.nanargmax(search_region),
+                search_region.shape,
             )
             new_cy = sy0 + int(peak_idx[0])
             new_cx = sx0 + int(peak_idx[1])
             # Only shift if the peak is significantly brighter than
             # the original center (avoid jitter on uniform regions).
             peak_val = image.data[new_cy, new_cx]
-            orig_val = image.data[
-                min(cy, h - 1), min(cx, w - 1)
-            ]
+            orig_val = image.data[min(cy, h - 1), min(cx, w - 1)]
             bg_std = float(np.nanstd(search_region))
             if bg_std > 0 and (peak_val - orig_val) / bg_std > 2.0:
                 cx, cy = new_cx, new_cy
@@ -675,8 +741,11 @@ def _draw_anomaly_cutout(
             interval = ZScaleInterval()
         vmin, vmax = interval.get_limits(cutout.flatten())
         ax.imshow(
-            cutout, origin="lower", cmap="gray_r",
-            vmin=vmin, vmax=vmax,
+            cutout,
+            origin="lower",
+            cmap="gray_r",
+            vmin=vmin,
+            vmax=vmax,
         )
     except Exception:
         ax.imshow(cutout, origin="lower", cmap="gray_r")
@@ -703,20 +772,27 @@ def _draw_anomaly_cutout(
         radius = int(np.sqrt(feature_area / np.pi))
     else:
         radius = anomaly.properties.get(
-            "radius", anomaly.properties.get("radius_px", 8),
+            "radius",
+            anomaly.properties.get("radius_px", 8),
         )
     if isinstance(radius, (int, float)) and radius > 0:
         # Cap radius so circle stays within cutout
         max_radius = min(
-            local_x, local_y,
-            cut_w - local_x, cut_h - local_y,
+            local_x,
+            local_y,
+            cut_w - local_x,
+            cut_h - local_y,
             r * 0.8,
         )
         draw_radius = min(radius, max(max_radius, 3))
         circle = Circle(
-            (local_x, local_y), draw_radius,
-            fill=False, edgecolor="yellow", linewidth=1.0,
-            linestyle="--", zorder=6,
+            (local_x, local_y),
+            draw_radius,
+            fill=False,
+            edgecolor="yellow",
+            linewidth=1.0,
+            linestyle="--",
+            zorder=6,
         )
         ax.add_patch(circle)
 
@@ -759,26 +835,43 @@ def _draw_overview_panel(
         px, py = None, None
         if overview_image is not None and anomaly.sky_ra is not None:
             px, py = _sky_to_pixel(
-                anomaly.sky_ra, anomaly.sky_dec, overview_image,
+                anomaly.sky_ra,
+                anomaly.sky_dec,
+                overview_image,
             )
         if px is not None and py is not None:
             ax.plot(
-                px, py,
-                "o", markersize=8, markerfacecolor="none",
-                markeredgecolor="yellow", markeredgewidth=1.0, zorder=6,
+                px,
+                py,
+                "o",
+                markersize=8,
+                markerfacecolor="none",
+                markeredgecolor="yellow",
+                markeredgewidth=1.0,
+                zorder=6,
             )
             ax.text(
-                px + 3, py + 3,
+                px + 3,
+                py + 3,
                 f"A{idx + 1}",
-                fontsize=5, color="yellow", fontweight="bold", zorder=7,
+                fontsize=5,
+                color="yellow",
+                fontweight="bold",
+                zorder=7,
             )
 
     ax.set_xticks([])
     ax.set_yticks([])
     ax.text(
-        0.02, 0.97, "Overview",
-        ha="left", va="top", fontsize=8, fontweight="bold",
-        color="white", transform=ax.transAxes,
+        0.02,
+        0.97,
+        "Overview",
+        ha="left",
+        va="top",
+        fontsize=8,
+        fontweight="bold",
+        color="white",
+        transform=ax.transAxes,
         bbox=dict(facecolor="black", alpha=0.7, edgecolor="none", pad=2),
         zorder=11,
     )
@@ -822,8 +915,12 @@ def create_discovery_mosaic(
     if not findings:
         fig, ax = plt.subplots(figsize=(6, 2))
         ax.text(
-            0.5, 0.5, "No findings to display",
-            ha="center", va="center", fontsize=14,
+            0.5,
+            0.5,
+            "No findings to display",
+            ha="center",
+            va="center",
+            fontsize=14,
         )
         ax.axis("off")
         return fig
@@ -837,7 +934,9 @@ def create_discovery_mosaic(
 
     # Collect top anomalies across all findings
     anomaly_items = _collect_top_anomalies(
-        findings, images, max_anomalies=max_panels - 1,
+        findings,
+        images,
+        max_anomalies=max_panels - 1,
     )
 
     if not anomaly_items:
@@ -853,7 +952,8 @@ def create_discovery_mosaic(
     panel_size = 3.5 if compact else 5.0
 
     fig, axes = plt.subplots(
-        n_rows, n_cols,
+        n_rows,
+        n_cols,
         figsize=(n_cols * panel_size, n_rows * panel_size),
         squeeze=False,
     )
@@ -886,10 +986,15 @@ def create_discovery_mosaic(
             conf_str = f"\nconf={anomaly.confidence.confidence:.3f}"
         label_size = 5 if compact else 6
         ax.text(
-            0.02, 0.97,
+            0.02,
+            0.97,
             f"A{idx + 1}: {atype}{conf_str}\n(F{finding_num} [{tag}])",
-            ha="left", va="top", fontsize=label_size, fontweight="bold",
-            color="white", transform=ax.transAxes,
+            ha="left",
+            va="top",
+            fontsize=label_size,
+            fontweight="bold",
+            color="white",
+            transform=ax.transAxes,
             bbox=dict(facecolor="black", alpha=0.7, edgecolor="none", pad=2),
             zorder=11,
         )
@@ -897,10 +1002,15 @@ def create_discovery_mosaic(
         # Coordinates
         if anomaly.sky_ra is not None:
             ax.text(
-                0.98, 0.97,
+                0.98,
+                0.97,
                 f"RA={anomaly.sky_ra:.4f}\nDec={anomaly.sky_dec:.4f}",
-                ha="right", va="top", fontsize=5,
-                color="white", alpha=0.8, transform=ax.transAxes,
+                ha="right",
+                va="top",
+                fontsize=5,
+                color="white",
+                alpha=0.8,
+                transform=ax.transAxes,
                 bbox=dict(facecolor="black", alpha=0.5, edgecolor="none", pad=1),
                 zorder=11,
             )
@@ -914,12 +1024,19 @@ def create_discovery_mosaic(
         bottom = ", ".join(filter(None, [score_str] + props_parts[:2]))
         if bottom:
             ax.text(
-                0.5, 0.02, bottom,
-                ha="center", va="bottom", fontsize=5.5,
-                color="white", transform=ax.transAxes,
+                0.5,
+                0.02,
+                bottom,
+                ha="center",
+                va="bottom",
+                fontsize=5.5,
+                color="white",
+                transform=ax.transAxes,
                 bbox=dict(
-                    facecolor="black", alpha=0.7,
-                    edgecolor="none", pad=2,
+                    facecolor="black",
+                    alpha=0.7,
+                    edgecolor="none",
+                    pad=2,
                     boxstyle="round,pad=0.3",
                 ),
                 zorder=11,
@@ -940,8 +1057,7 @@ def create_discovery_mosaic(
         f"(of {total_anomalies} total across {len(findings)} findings)",
         fontsize=11,
     )
-    fig.subplots_adjust(top=0.97, bottom=0.01, left=0.01, right=0.99,
-                        hspace=0.04, wspace=0.04)
+    fig.subplots_adjust(top=0.97, bottom=0.01, left=0.01, right=0.99, hspace=0.04, wspace=0.04)
     return fig
 
 
@@ -975,7 +1091,8 @@ def _create_finding_mosaic(
     panel_size = 6.0
 
     fig, axes = plt.subplots(
-        n_rows, n_cols,
+        n_rows,
+        n_cols,
         figsize=(n_cols * panel_size, n_rows * panel_size),
         squeeze=False,
     )
@@ -996,9 +1113,13 @@ def _create_finding_mosaic(
         else:
             ax.set_facecolor("#1a1a1a")
             ax.text(
-                0.5, 0.5,
+                0.5,
+                0.5,
                 f"RA={finding.region_ra:.2f}\nDec={finding.region_dec:.2f}",
-                ha="center", va="center", fontsize=8, color="white",
+                ha="center",
+                va="center",
+                fontsize=8,
+                color="white",
                 transform=ax.transAxes,
             )
 
@@ -1036,19 +1157,30 @@ def _create_finding_mosaic(
         # Top-left: finding number + classification
         top_left = f"F{finding_num} [{tag}]\n{display_name}"
         ax.text(
-            0.02, 0.97, top_left,
-            ha="left", va="top", fontsize=7, fontweight="bold",
-            color="white", transform=ax.transAxes,
+            0.02,
+            0.97,
+            top_left,
+            ha="left",
+            va="top",
+            fontsize=7,
+            fontweight="bold",
+            color="white",
+            transform=ax.transAxes,
             bbox=dict(facecolor="black", alpha=0.7, edgecolor="none", pad=2),
             zorder=11,
         )
 
         # Top-right: coordinates
         ax.text(
-            0.98, 0.97,
+            0.98,
+            0.97,
             f"RA={finding.region_ra:.2f}\nDec={finding.region_dec:.2f}",
-            ha="right", va="top", fontsize=5,
-            color="white", alpha=0.8, transform=ax.transAxes,
+            ha="right",
+            va="top",
+            fontsize=5,
+            color="white",
+            alpha=0.8,
+            transform=ax.transAxes,
             bbox=dict(facecolor="black", alpha=0.5, edgecolor="none", pad=1),
             zorder=11,
         )
@@ -1070,12 +1202,19 @@ def _create_finding_mosaic(
                 bottom_parts.append(f"{n_matches} matches incl. {first_name}")
 
         ax.text(
-            0.5, 0.02, "\n".join(bottom_parts),
-            ha="center", va="bottom", fontsize=5.5,
-            color="white", transform=ax.transAxes,
+            0.5,
+            0.02,
+            "\n".join(bottom_parts),
+            ha="center",
+            va="bottom",
+            fontsize=5.5,
+            color="white",
+            transform=ax.transAxes,
             bbox=dict(
-                facecolor="black", alpha=0.7,
-                edgecolor="none", pad=2,
+                facecolor="black",
+                alpha=0.7,
+                edgecolor="none",
+                pad=2,
                 boxstyle="round,pad=0.3",
             ),
             zorder=11,
@@ -1096,8 +1235,7 @@ def _create_finding_mosaic(
         f"Discovery Mosaic -- {n_panels} findings (F{first_num}-F{last_num})",
         fontsize=11,
     )
-    fig.subplots_adjust(top=0.97, bottom=0.01, left=0.01, right=0.99,
-                        hspace=0.04, wspace=0.04)
+    fig.subplots_adjust(top=0.97, bottom=0.01, left=0.01, right=0.99, hspace=0.04, wspace=0.04)
     return fig
 
 

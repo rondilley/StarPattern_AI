@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
@@ -197,9 +197,7 @@ class ActiveLearner:
         n_neg = len(self._labeled_negative)
 
         if n_pos < _MIN_RETRAIN_POSITIVE or n_neg < _MIN_RETRAIN_NEGATIVE:
-            logger.debug(
-                f"Insufficient data for retraining: {n_pos} positive, {n_neg} negative"
-            )
+            logger.debug(f"Insufficient data for retraining: {n_pos} positive, {n_neg} negative")
             return
 
         try:
@@ -251,9 +249,7 @@ class ActiveLearner:
         'interesting' label. Upweight detectors with positive correlation.
         """
         # Need feedback records with detector_scores
-        records_with_scores = [
-            f for f in self.feedback_history if "detector_scores" in f
-        ]
+        records_with_scores = [f for f in self.feedback_history if "detector_scores" in f]
 
         if len(records_with_scores) < 10:
             return
@@ -262,25 +258,18 @@ class ActiveLearner:
         detector_names = list(records_with_scores[0]["detector_scores"].keys())
 
         # Build arrays
-        labels = np.array([
-            1.0 if f["is_interesting"] else 0.0
-            for f in records_with_scores
-        ])
+        labels = np.array([1.0 if f["is_interesting"] else 0.0 for f in records_with_scores])
         label_mean = labels.mean()
         label_std = max(labels.std(), 1e-6)
 
         weights = {}
         for name in detector_names:
-            scores = np.array([
-                f["detector_scores"].get(name, 0.0)
-                for f in records_with_scores
-            ])
+            scores = np.array([f["detector_scores"].get(name, 0.0) for f in records_with_scores])
             score_std = max(scores.std(), 1e-6)
 
             # Pearson correlation
             correlation = float(
-                np.mean((scores - scores.mean()) * (labels - label_mean))
-                / (score_std * label_std)
+                np.mean((scores - scores.mean()) * (labels - label_mean)) / (score_std * label_std)
             )
 
             # Transform correlation to weight: higher correlation = higher weight
@@ -330,9 +319,7 @@ class ActiveLearner:
                 r = {k: v for k, v in record.items()}
                 # Ensure all values are JSON-serializable
                 if "detector_scores" in r:
-                    r["detector_scores"] = {
-                        k: float(v) for k, v in r["detector_scores"].items()
-                    }
+                    r["detector_scores"] = {k: float(v) for k, v in r["detector_scores"].items()}
                 serializable.append(r)
 
             feedback_file.write_text(json.dumps(serializable, indent=2))
@@ -359,9 +346,7 @@ class ActiveLearner:
             if feedback_file.exists():
                 records = json.loads(feedback_file.read_text())
                 self.feedback_history = records
-                logger.info(
-                    f"Loaded {len(records)} feedback records from {feedback_file}"
-                )
+                logger.info(f"Loaded {len(records)} feedback records from {feedback_file}")
 
             pos_file = path / "labeled_positive.npy"
             if pos_file.exists():
@@ -376,9 +361,7 @@ class ActiveLearner:
         except Exception as e:
             logger.debug(f"Failed to load persisted feedback: {e}")
 
-    def get_llm_feedback(
-        self, result: PatternResult, provider: Any
-    ) -> bool:
+    def get_llm_feedback(self, result: PatternResult, provider: Any) -> bool:
         """Get automated feedback from an LLM."""
         from star_pattern.llm.prompts import SYSTEM_ASTRONOMER
 
@@ -410,9 +393,7 @@ class ActiveLearner:
             false positive patterns, and detector performance.
         """
         n_total = len(self.feedback_history)
-        n_interesting = sum(
-            1 for f in self.feedback_history if f["is_interesting"]
-        )
+        n_interesting = sum(1 for f in self.feedback_history if f["is_interesting"])
         n_boring = n_total - n_interesting
 
         # Detector accuracy: for each detector, what fraction of its
@@ -434,9 +415,7 @@ class ActiveLearner:
 
     def _detector_accuracy_summary(self) -> dict[str, float]:
         """Compute per-detector accuracy from feedback records."""
-        records = [
-            f for f in self.feedback_history if "detector_scores" in f
-        ]
+        records = [f for f in self.feedback_history if "detector_scores" in f]
         if len(records) < 5:
             return {}
 
@@ -445,16 +424,11 @@ class ActiveLearner:
 
         for name in detector_names:
             # For each detector, count how often high score -> interesting
-            high_score_records = [
-                r for r in records
-                if r["detector_scores"].get(name, 0) > 0.3
-            ]
+            high_score_records = [r for r in records if r["detector_scores"].get(name, 0) > 0.3]
             if not high_score_records:
                 continue
 
-            correct = sum(
-                1 for r in high_score_records if r["is_interesting"]
-            )
+            correct = sum(1 for r in high_score_records if r["is_interesting"])
             accuracy[name] = correct / len(high_score_records)
 
         return accuracy
@@ -482,9 +456,7 @@ class ActiveLearner:
         if strategy.weight_adjustments:
             self._apply_weight_adjustments(strategy.weight_adjustments)
 
-    def _apply_weight_adjustments(
-        self, weight_adjustments: dict[str, float]
-    ) -> None:
+    def _apply_weight_adjustments(self, weight_adjustments: dict[str, float]) -> None:
         """Apply weight adjustments from LLM strategy.
 
         Blends current learned weights with LLM suggestions using
@@ -503,18 +475,14 @@ class ActiveLearner:
         if self._learned_weights:
             total = sum(self._learned_weights.values())
             if total > 0:
-                self._learned_weights = {
-                    k: v / total for k, v in self._learned_weights.items()
-                }
+                self._learned_weights = {k: v / total for k, v in self._learned_weights.items()}
 
         logger.info("Applied LLM strategy weight adjustments to active learner")
 
     def get_statistics(self) -> dict[str, Any]:
         """Get summary statistics about accumulated feedback."""
         n_total = len(self.feedback_history)
-        n_interesting = sum(
-            1 for f in self.feedback_history if f["is_interesting"]
-        )
+        n_interesting = sum(1 for f in self.feedback_history if f["is_interesting"])
         n_boring = n_total - n_interesting
 
         return {

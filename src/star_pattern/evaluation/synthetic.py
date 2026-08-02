@@ -49,15 +49,12 @@ class SyntheticInjector:
 
         # Handle angle wrapping
         if angle_end > np.pi:
-            arc_mask = (
-                (np.abs(r - radius) < arc_width)
-                & ((theta >= angle_start) | (theta < angle_end - 2 * np.pi))
+            arc_mask = (np.abs(r - radius) < arc_width) & (
+                (theta >= angle_start) | (theta < angle_end - 2 * np.pi)
             )
         else:
             arc_mask = (
-                (np.abs(r - radius) < arc_width)
-                & (theta >= angle_start)
-                & (theta < angle_end)
+                (np.abs(r - radius) < arc_width) & (theta >= angle_start) & (theta < angle_end)
             )
 
         # Gaussian profile across arc width

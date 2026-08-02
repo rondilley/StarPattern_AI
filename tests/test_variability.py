@@ -4,7 +4,6 @@ All tests use synthetic light curves -- no external data needed.
 """
 
 import numpy as np
-import pytest
 
 from star_pattern.core.catalog import CatalogEntry, StarCatalog
 from star_pattern.core.config import DetectionConfig
@@ -57,9 +56,7 @@ def _make_catalog_with_lc(lightcurves: list[dict]) -> StarCatalog:
                 source_id=f"ztf_{i}",
                 properties={
                     "ztf_lightcurve": lc_data,
-                    "ztf_n_epochs": sum(
-                        len(pts) for pts in lc_data.values()
-                    ),
+                    "ztf_n_epochs": sum(len(pts) for pts in lc_data.values()),
                     "ztf_baseline_days": 500.0,
                 },
             )
@@ -350,9 +347,7 @@ class TestAnalyzerIntegration:
         analyzer_high = VariabilityAnalyzer(config_high)
         result_high = analyzer_high.analyze(catalog)
 
-        assert len(result_low["variable_candidates"]) >= len(
-            result_high["variable_candidates"]
-        )
+        assert len(result_low["variable_candidates"]) >= len(result_high["variable_candidates"])
 
 
 def _make_stats_entry(
@@ -374,8 +369,11 @@ def _make_stats_entry(
         properties["ztf_lightcurve"] = {}
         properties["ztf_n_epochs"] = 0
     return CatalogEntry(
-        ra=ra, dec=dec, mag=18.0,
-        source="ztf", source_id=source_id,
+        ra=ra,
+        dec=dec,
+        mag=18.0,
+        source="ztf",
+        source_id=source_id,
         properties=properties,
     )
 
@@ -386,22 +384,40 @@ class TestStatsBasedAnalysis:
     def test_analyze_from_ztf_stats(self):
         """Entries with ztf_stats but no light curves produce variable candidates."""
         entries = [
-            _make_stats_entry({
-                "magrms": 0.3, "medmagerr": 0.02,
-                "medianabsdev": 0.2, "vonneumannratio": 1.2,
-                "stetsonj": 1.5, "stetsonk": 0.8,
-                "skewness": 0.1, "maxslope": 0.5,
-                "maxmag": 18.5, "minmag": 17.5,
-                "filtercode": "r", "ngoodobs": 100,
-            }, source_id="ztf_001"),
-            _make_stats_entry({
-                "magrms": 0.1, "medmagerr": 0.02,
-                "medianabsdev": 0.05, "vonneumannratio": 1.8,
-                "stetsonj": 0.5, "stetsonk": 0.4,
-                "skewness": 0.0, "maxslope": 0.1,
-                "maxmag": 18.2, "minmag": 17.9,
-                "filtercode": "r", "ngoodobs": 80,
-            }, source_id="ztf_002"),
+            _make_stats_entry(
+                {
+                    "magrms": 0.3,
+                    "medmagerr": 0.02,
+                    "medianabsdev": 0.2,
+                    "vonneumannratio": 1.2,
+                    "stetsonj": 1.5,
+                    "stetsonk": 0.8,
+                    "skewness": 0.1,
+                    "maxslope": 0.5,
+                    "maxmag": 18.5,
+                    "minmag": 17.5,
+                    "filtercode": "r",
+                    "ngoodobs": 100,
+                },
+                source_id="ztf_001",
+            ),
+            _make_stats_entry(
+                {
+                    "magrms": 0.1,
+                    "medmagerr": 0.02,
+                    "medianabsdev": 0.05,
+                    "vonneumannratio": 1.8,
+                    "stetsonj": 0.5,
+                    "stetsonk": 0.4,
+                    "skewness": 0.0,
+                    "maxslope": 0.1,
+                    "maxmag": 18.2,
+                    "minmag": 17.9,
+                    "filtercode": "r",
+                    "ngoodobs": 80,
+                },
+                source_id="ztf_002",
+            ),
         ]
         catalog = StarCatalog(entries=entries, source="ztf")
         analyzer = VariabilityAnalyzer()
@@ -415,14 +431,22 @@ class TestStatsBasedAnalysis:
 
     def test_stats_classification_agn_like(self):
         """High amplitude + low eta from stats -> agn_like."""
-        entry = _make_stats_entry({
-            "magrms": 0.5, "medmagerr": 0.02,
-            "medianabsdev": 0.3, "vonneumannratio": 1.0,
-            "stetsonj": None, "stetsonk": None,
-            "skewness": 0.0, "maxslope": 0.3,
-            "maxmag": 19.0, "minmag": 17.5,  # amplitude = 1.5
-            "filtercode": "r", "ngoodobs": 50,
-        })
+        entry = _make_stats_entry(
+            {
+                "magrms": 0.5,
+                "medmagerr": 0.02,
+                "medianabsdev": 0.3,
+                "vonneumannratio": 1.0,
+                "stetsonj": None,
+                "stetsonk": None,
+                "skewness": 0.0,
+                "maxslope": 0.3,
+                "maxmag": 19.0,
+                "minmag": 17.5,  # amplitude = 1.5
+                "filtercode": "r",
+                "ngoodobs": 50,
+            }
+        )
         catalog = StarCatalog(entries=[entry], source="ztf")
         analyzer = VariabilityAnalyzer()
         result = analyzer.analyze(catalog)
@@ -432,14 +456,22 @@ class TestStatsBasedAnalysis:
 
     def test_stats_high_maxslope_eruptive(self):
         """maxslope > 1.0 mag/day -> eruptive classification."""
-        entry = _make_stats_entry({
-            "magrms": 0.4, "medmagerr": 0.02,
-            "medianabsdev": 0.2, "vonneumannratio": 1.8,
-            "stetsonj": None, "stetsonk": None,
-            "skewness": 0.0, "maxslope": 2.5,
-            "maxmag": 18.5, "minmag": 18.0,  # amplitude = 0.5, not enough for agn
-            "filtercode": "r", "ngoodobs": 60,
-        })
+        entry = _make_stats_entry(
+            {
+                "magrms": 0.4,
+                "medmagerr": 0.02,
+                "medianabsdev": 0.2,
+                "vonneumannratio": 1.8,
+                "stetsonj": None,
+                "stetsonk": None,
+                "skewness": 0.0,
+                "maxslope": 2.5,
+                "maxmag": 18.5,
+                "minmag": 18.0,  # amplitude = 0.5, not enough for agn
+                "filtercode": "r",
+                "ngoodobs": 60,
+            }
+        )
         catalog = StarCatalog(entries=[entry], source="ztf")
         analyzer = VariabilityAnalyzer()
         result = analyzer.analyze(catalog)
@@ -450,14 +482,22 @@ class TestStatsBasedAnalysis:
 
     def test_stats_non_variable(self):
         """Low magrms relative to medmagerr -> non_variable."""
-        entry = _make_stats_entry({
-            "magrms": 0.03, "medmagerr": 0.03,
-            "medianabsdev": 0.02, "vonneumannratio": 2.0,
-            "stetsonj": 0.1, "stetsonk": 0.1,
-            "skewness": 0.0, "maxslope": 0.05,
-            "maxmag": 18.05, "minmag": 17.95,
-            "filtercode": "r", "ngoodobs": 100,
-        })
+        entry = _make_stats_entry(
+            {
+                "magrms": 0.03,
+                "medmagerr": 0.03,
+                "medianabsdev": 0.02,
+                "vonneumannratio": 2.0,
+                "stetsonj": 0.1,
+                "stetsonk": 0.1,
+                "skewness": 0.0,
+                "maxslope": 0.05,
+                "maxmag": 18.05,
+                "minmag": 17.95,
+                "filtercode": "r",
+                "ngoodobs": 100,
+            }
+        )
         catalog = StarCatalog(entries=[entry], source="ztf")
         analyzer = VariabilityAnalyzer()
         result = analyzer.analyze(catalog)
@@ -470,12 +510,18 @@ class TestStatsBasedAnalysis:
         """When both stats and light curves exist, light curve path is used."""
         entry = _make_stats_entry(
             {
-                "magrms": 0.01, "medmagerr": 0.01,
-                "medianabsdev": 0.01, "vonneumannratio": 2.0,
-                "stetsonj": 0.0, "stetsonk": 0.0,
-                "skewness": 0.0, "maxslope": 0.0,
-                "maxmag": 18.01, "minmag": 17.99,
-                "filtercode": "r", "ngoodobs": 100,
+                "magrms": 0.01,
+                "medmagerr": 0.01,
+                "medianabsdev": 0.01,
+                "vonneumannratio": 2.0,
+                "stetsonj": 0.0,
+                "stetsonk": 0.0,
+                "skewness": 0.0,
+                "maxslope": 0.0,
+                "maxmag": 18.01,
+                "minmag": 17.99,
+                "filtercode": "r",
+                "ngoodobs": 100,
             },
             include_lightcurve=True,
         )
@@ -490,14 +536,22 @@ class TestStatsBasedAnalysis:
 
     def test_stats_insufficient_ngoodobs_skipped(self):
         """Sources with ngoodobs < min_epochs should be skipped."""
-        entry = _make_stats_entry({
-            "magrms": 0.5, "medmagerr": 0.02,
-            "medianabsdev": 0.3, "vonneumannratio": 1.0,
-            "stetsonj": None, "stetsonk": None,
-            "skewness": 0.0, "maxslope": 0.3,
-            "maxmag": 19.0, "minmag": 17.5,
-            "filtercode": "r", "ngoodobs": 5,  # below default min_epochs=10
-        })
+        entry = _make_stats_entry(
+            {
+                "magrms": 0.5,
+                "medmagerr": 0.02,
+                "medianabsdev": 0.3,
+                "vonneumannratio": 1.0,
+                "stetsonj": None,
+                "stetsonk": None,
+                "skewness": 0.0,
+                "maxslope": 0.3,
+                "maxmag": 19.0,
+                "minmag": 17.5,
+                "filtercode": "r",
+                "ngoodobs": 5,  # below default min_epochs=10
+            }
+        )
         catalog = StarCatalog(entries=[entry], source="ztf")
         analyzer = VariabilityAnalyzer()
         result = analyzer.analyze(catalog)
@@ -507,14 +561,22 @@ class TestStatsBasedAnalysis:
 
     def test_stats_score_range(self):
         """Stats-based variability_score should be in [0, 1]."""
-        entry = _make_stats_entry({
-            "magrms": 0.5, "medmagerr": 0.01,
-            "medianabsdev": 0.3, "vonneumannratio": 0.5,
-            "stetsonj": 3.0, "stetsonk": 1.5,
-            "skewness": 0.5, "maxslope": 5.0,
-            "maxmag": 20.0, "minmag": 16.0,
-            "filtercode": "g", "ngoodobs": 200,
-        })
+        entry = _make_stats_entry(
+            {
+                "magrms": 0.5,
+                "medmagerr": 0.01,
+                "medianabsdev": 0.3,
+                "vonneumannratio": 0.5,
+                "stetsonj": 3.0,
+                "stetsonk": 1.5,
+                "skewness": 0.5,
+                "maxslope": 5.0,
+                "maxmag": 20.0,
+                "minmag": 16.0,
+                "filtercode": "g",
+                "ngoodobs": 200,
+            }
+        )
         catalog = StarCatalog(entries=[entry], source="ztf")
         analyzer = VariabilityAnalyzer()
         result = analyzer.analyze(catalog)

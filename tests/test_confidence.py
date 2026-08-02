@@ -12,25 +12,26 @@ Tests cover:
 
 from __future__ import annotations
 
-import math
-
 import numpy as np
 import pytest
 from scipy import stats
 
 from star_pattern.evaluation.confidence import (
-    ConfidenceEvaluator,
-    ConfidenceScore,
-    _QUALITY_FLOORS,
+    _HEURISTIC_SCORE_FLOORS,
     _MAX_PER_DETECTOR_SYSTEM,
     _MAX_PER_REGION_SYSTEM,
+    _QUALITY_FLOORS,
+    EVIDENCE_HEURISTIC,
+    EVIDENCE_TAIL,
+    ConfidenceEvaluator,
+    ConfidenceScore,
     apply_fdr_correction,
     assign_spatial_groups,
     compute_group_summary,
     passes_quality_floor,
 )
-from star_pattern.evaluation.metrics import Anomaly, PatternResult
-
+from star_pattern.evaluation.metrics import Anomaly
+from star_pattern.evaluation.statistical import multiple_comparison_correction
 
 # ---------------------------------------------------------------------------
 # 1. ConfidenceScore dataclass
@@ -148,19 +149,26 @@ class TestConfidenceLens:
         assert cs.confidence > 0.50
 
     def test_ring_completeness(self, evaluator):
-        """Ring with completeness=0.8, no SNR -> use completeness mapping."""
+        """Ring completeness is a geometric fraction, not a tail probability.
+
+        There is no null distribution for "ring completeness under noise",
+        so completeness must report as a heuristic score and stay out of
+        the FDR family.
+        """
         cs = evaluator.compute_confidence(
             anomaly_type="lens_ring",
             detector="lens",
             properties={"completeness": 0.8, "snr": 0},
             score=0.8,
         )
-        effective_sigma = 0.8 * 5.0  # = 4.0
-        expected_p = float(stats.norm.sf(effective_sigma))
-        assert cs.p_value == pytest.approx(expected_p, rel=1e-6)
+        assert cs.evidence_basis == EVIDENCE_HEURISTIC
+        assert cs.p_value is None
+        assert cs.p_corrected is None
+        assert cs.heuristic_score == pytest.approx(0.8)
         assert cs.physical_quantity == "completeness"
         assert cs.physical_value == pytest.approx(0.8)
         assert "completeness" in cs.annotation.lower()
+        assert "p=" not in cs.annotation
 
     def test_arc_zero_snr_falls_back_to_score(self, evaluator):
         """When snr=0, use score as fallback."""
@@ -332,12 +340,13 @@ class TestConfidenceWavelet:
             score=5.0,
         )
         p_raw = float(stats.norm.sf(5.0))
-        # n_tests = max(n_scales, 4) = 5
-        p_corrected = min(p_raw * 5 / 1, 1.0)
+        # n_tests = max(n_scales, 4) = 5. Multiplying the raw p by the
+        # test count is Bonferroni, not BH-FDR, and is labelled as such.
+        p_corrected = min(p_raw * 5, 1.0)
         assert cs.p_value == pytest.approx(p_raw, rel=1e-6)
         assert cs.p_corrected == pytest.approx(p_corrected, rel=1e-6)
         assert cs.confidence > 0.99
-        assert cs.correction_method == "fdr"
+        assert cs.correction_method == "bonferroni"
         assert cs.n_independent_tests == 5
 
     def test_n_scales_minimum_4(self, evaluator):
@@ -358,32 +367,44 @@ class TestConfidenceClassical:
     """Classical detector: Hough votes and Gabor energy."""
 
     def test_hough_votes(self, evaluator):
-        """hough_votes=50 should compute p-value via Poisson."""
+        """Hough votes report as a heuristic, not a Poisson tail probability.
+
+        The old code derived the Poisson null rate from the observation
+        itself (expected = votes * 0.1), which makes the result a monotone
+        transform of the vote count rather than a probability under any
+        data-independent null.
+        """
         cs = evaluator.compute_confidence(
             anomaly_type="classical_arc",
             detector="classical",
             properties={"hough_votes": 50},
             score=50,
         )
-        expected_rate = max(50 * 0.1, 1.0)  # = 5.0
-        p = float(1 - stats.poisson.cdf(max(int(50) - 1, 0), expected_rate))
-        assert cs.p_value == pytest.approx(p, rel=1e-6)
+        assert cs.evidence_basis == EVIDENCE_HEURISTIC
+        assert cs.p_value is None
+        assert cs.p_corrected is None
         assert cs.physical_quantity == "Hough_votes"
-        assert cs.method == "poisson_cdf"
-        assert cs.confidence == pytest.approx(1 - p, rel=1e-6)
+        assert cs.physical_value == pytest.approx(50.0)
+        assert cs.method == "hough_vote_count"
+        assert "p=" not in cs.annotation
 
     def test_gabor_beats_hough(self, evaluator):
-        """When gabor_energy > hough_votes, Gabor is used."""
+        """When gabor_energy > hough_votes, Gabor is used (still heuristic).
+
+        Gabor energy is a filter response, not a z-score, so norm.sf of it
+        is not a tail probability.
+        """
         cs = evaluator.compute_confidence(
             anomaly_type="classical_arc",
             detector="classical",
             properties={"hough_votes": 2, "gabor_energy": 5.0},
             score=5.0,
         )
-        expected_p = float(stats.norm.sf(5.0))
-        assert cs.p_value == pytest.approx(expected_p, rel=1e-6)
+        assert cs.evidence_basis == EVIDENCE_HEURISTIC
+        assert cs.p_value is None
         assert cs.physical_quantity == "gabor_energy"
-        assert cs.method == "gaussian_sf"
+        assert cs.physical_value == pytest.approx(5.0)
+        assert cs.method == "gabor_energy"
 
 
 class TestConfidenceKinematic:
@@ -397,9 +418,11 @@ class TestConfidenceKinematic:
             properties={"n_members": 10, "expected_field": 1.0},
             score=0.9,
         )
-        expected_p = float(1 - stats.poisson.cdf(9, 1.0))
+        # sf(k-1) rather than 1 - cdf(k-1): the latter underflows to 0.0
+        # for rich groups and reports false certainty.
+        expected_p = float(stats.poisson.sf(9, 1.0))
         assert cs.p_value == pytest.approx(expected_p, rel=1e-6)
-        assert cs.method == "poisson_cdf"
+        assert cs.method == "poisson_sf"
         assert cs.physical_quantity == "n_members"
         assert cs.physical_value == pytest.approx(10.0)
         assert cs.confidence > 0.999
@@ -415,7 +438,8 @@ class TestConfidenceKinematic:
         )
         expected_p = float(2 * stats.norm.sf(abs(4.5)))
         assert cs.p_value == pytest.approx(expected_p, rel=1e-6)
-        assert cs.method == "gaussian_sf"
+        assert cs.method == "gaussian_sf_twotailed"
+        assert cs.evidence_basis == EVIDENCE_TAIL
         assert cs.confidence > 0.99
 
     def test_stellar_stream(self, evaluator):
@@ -426,9 +450,9 @@ class TestConfidenceKinematic:
             properties={"n_members": 15, "expected_field": 1.0},
             score=0.95,
         )
-        expected_p = float(1 - stats.poisson.cdf(14, 1.0))
+        expected_p = float(stats.poisson.sf(14, 1.0))
         assert cs.p_value == pytest.approx(expected_p, rel=1e-6)
-        assert cs.method == "poisson_cdf"
+        assert cs.method == "poisson_sf"
         assert cs.confidence > 0.9999
 
 
@@ -565,9 +589,13 @@ class TestConfidencePopulation:
             },
             score=0.10,
         )
-        # n_sources=3 < 5 -> fallback
-        expected_p = max(1 - 0.10, 1e-15)
-        assert cs.p_value == pytest.approx(expected_p, rel=1e-6)
+        # n_sources=3 < 5 -> no binomial test is possible, so the raw
+        # score reports as a heuristic rather than a manufactured p-value.
+        assert cs.evidence_basis == EVIDENCE_HEURISTIC
+        assert cs.p_value is None
+        assert cs.p_corrected is None
+        assert cs.heuristic_score == pytest.approx(0.10)
+        assert cs.physical_quantity == "bs_fraction"
 
 
 class TestConfidenceVariability:
@@ -610,8 +638,9 @@ class TestConfidenceVariability:
             score=0.6,
         )
         assert cs.method == "score_proxy"
-        expected_p = max(1 - 0.6, 1e-15)
-        assert cs.p_value == pytest.approx(expected_p, rel=1e-6)
+        assert cs.evidence_basis == EVIDENCE_HEURISTIC
+        assert cs.p_value is None
+        assert cs.heuristic_score == pytest.approx(0.6)
 
 
 class TestConfidenceTemporal:
@@ -649,16 +678,25 @@ class TestConfidenceAnomaly:
     """Anomaly (Isolation Forest): empirical rank."""
 
     def test_anomaly_detector(self, evaluator):
-        """IF score of 0.95 -> p = 0.05."""
+        """Isolation-forest scores are batch-normalized, not ranked p-values.
+
+        AnomalyDetector min-max normalizes score_samples within the current
+        batch, so 1 - score is not an empirical percentile against any
+        calibrated null population.
+        """
         cs = evaluator.compute_confidence(
             anomaly_type="embedding_outlier",
             detector="anomaly",
             properties={},
             score=0.95,
         )
-        assert cs.p_value == pytest.approx(0.05, rel=1e-6)
+        assert cs.evidence_basis == EVIDENCE_HEURISTIC
+        assert cs.p_value is None
+        assert cs.p_corrected is None
+        assert cs.heuristic_score == pytest.approx(0.95)
         assert cs.confidence == pytest.approx(0.95)
-        assert cs.method == "empirical_rank"
+        assert cs.method == "isolation_forest_score"
+        assert "p=" not in cs.annotation
 
 
 class TestConfidenceFallback:
@@ -674,8 +712,9 @@ class TestConfidenceFallback:
         )
         assert cs.method == "score_proxy"
         assert cs.confidence == pytest.approx(0.7)
-        expected_p = max(1 - 0.7, 1e-15)
-        assert cs.p_value == pytest.approx(expected_p, rel=1e-6)
+        assert cs.evidence_basis == EVIDENCE_HEURISTIC
+        assert cs.p_value is None
+        assert cs.heuristic_score == pytest.approx(0.7)
         assert "unknown_detector" in cs.annotation
 
 
@@ -704,6 +743,59 @@ class TestQualityFloor:
             annotation="test",
         )
         assert passes_quality_floor(cs, detector) is False
+
+    @pytest.mark.parametrize("detector,floor", list(_HEURISTIC_SCORE_FLOORS.items()))
+    def test_heuristic_floor_is_a_score_cutoff(self, detector, floor):
+        """Heuristic detections are triaged on score, not on a p-value.
+
+        Reusing the p-value floor here would be a category error: the lens
+        floor of 0.0013 encodes "3 sigma", not "score >= 0.9987".
+        """
+        at_floor = ConfidenceScore.heuristic(
+            score=floor,
+            physical_quantity="test",
+            physical_value=floor,
+            method="score_proxy",
+            annotation="test",
+        )
+        assert passes_quality_floor(at_floor, detector) is True
+
+        below = ConfidenceScore.heuristic(
+            score=floor - 0.01,
+            physical_quantity="test",
+            physical_value=floor - 0.01,
+            method="score_proxy",
+            annotation="test",
+        )
+        assert passes_quality_floor(below, detector) is False
+
+    def test_heuristic_ring_completeness_matches_previous_selectivity(self):
+        """The lens heuristic floor keeps the old completeness >= 0.6 cut.
+
+        The previous code mapped completeness through norm.sf(c * 5) and
+        compared against a p-value floor of 0.0013, which admitted rings
+        with completeness of 0.6 and above.
+        """
+        evaluator = ConfidenceEvaluator()
+        for completeness, expected in ((0.8, True), (0.6, True), (0.4, False)):
+            cs = evaluator.compute_confidence(
+                anomaly_type="lens_ring",
+                detector="lens",
+                properties={"completeness": completeness, "snr": 0},
+                score=completeness,
+            )
+            assert cs.evidence_basis == EVIDENCE_HEURISTIC
+            assert passes_quality_floor(cs, "lens") is expected
+
+    def test_heuristic_unknown_detector_uses_default_score_floor(self):
+        cs = ConfidenceScore.heuristic(
+            score=0.96,
+            physical_quantity="score",
+            physical_value=0.96,
+            method="score_proxy",
+            annotation="test",
+        )
+        assert passes_quality_floor(cs, "made_up_detector") is True
 
     @pytest.mark.parametrize("detector,floor", list(_QUALITY_FLOORS.items()))
     def test_below_floor_passes(self, detector, floor):
@@ -834,9 +926,7 @@ class TestFDRCorrection:
             # Corrected p should be >= raw p
             assert a.confidence.p_corrected >= p_vals[i] - 1e-15
             # Confidence should equal 1 - p_corrected
-            assert a.confidence.confidence == pytest.approx(
-                1 - a.confidence.p_corrected, abs=1e-10
-            )
+            assert a.confidence.confidence == pytest.approx(1 - a.confidence.p_corrected, abs=1e-10)
             # Correction method set
             assert a.confidence.correction_method == "fdr"
             # n_independent_tests set to total count
@@ -890,6 +980,94 @@ class TestFDRCorrection:
         """Empty anomaly list should not raise."""
         apply_fdr_correction([])
 
+    def test_heuristics_are_excluded_from_the_fdr_family(self):
+        """Heuristic scores must not join the FDR family.
+
+        A detector score is not a p-value. Including one both corrupts the
+        ranks of the real p-values and hands the heuristic a corrected
+        p-value it never earned.
+        """
+        tail = []
+        for p in (0.001, 0.02, 0.5):
+            a = Anomaly(anomaly_type="test", detector="lens", score=1.0)
+            a.confidence = ConfidenceScore(
+                confidence=1 - p,
+                p_value=p,
+                p_corrected=p,
+                physical_quantity="SNR",
+                physical_value=5.0,
+                method="gaussian_sf",
+                annotation="test",
+            )
+            tail.append(a)
+
+        heuristic = Anomaly(anomaly_type="test", detector="anomaly", score=0.99)
+        heuristic.confidence = ConfidenceScore.heuristic(
+            score=0.99,
+            physical_quantity="IF_score",
+            physical_value=0.99,
+            method="isolation_forest_score",
+            annotation="Isolation forest score 0.990 (heuristic, uncalibrated)",
+        )
+
+        apply_fdr_correction(tail + [heuristic])
+
+        # The family size is the tail count, not the anomaly count.
+        for a in tail:
+            assert a.confidence.correction_method == "fdr"
+            assert a.confidence.n_independent_tests == 3
+
+        # BH over exactly [0.001, 0.02, 0.5].
+        expected = multiple_comparison_correction([0.001, 0.02, 0.5], "fdr")
+        assert [a.confidence.p_corrected for a in tail] == pytest.approx(expected)
+
+        # The heuristic is untouched and still carries no p-value.
+        assert heuristic.confidence.p_value is None
+        assert heuristic.confidence.p_corrected is None
+        assert heuristic.confidence.correction_method == "none"
+        assert heuristic.confidence.heuristic_score == pytest.approx(0.99)
+
+    def test_heuristic_serializes_to_valid_json(self):
+        """Heuristic entries round-trip with explicit null p-values."""
+        import json
+
+        cs = ConfidenceScore.heuristic(
+            score=0.87,
+            physical_quantity="Hough_votes",
+            physical_value=42.0,
+            method="hough_vote_count",
+            annotation="Classical arc: 42 Hough votes (heuristic, uncalibrated)",
+        )
+        payload = cs.to_dict()
+        assert payload["p_value"] is None
+        assert payload["p_corrected"] is None
+        assert payload["evidence_basis"] == EVIDENCE_HEURISTIC
+        assert payload["heuristic_score"] == pytest.approx(0.87)
+        assert "p=" not in payload["annotation"]
+
+        restored = ConfidenceScore.from_dict(json.loads(json.dumps(payload)))
+        assert restored.evidence_basis == EVIDENCE_HEURISTIC
+        assert restored.p_value is None
+        assert restored.heuristic_score == pytest.approx(0.87)
+
+    def test_legacy_report_dict_infers_evidence_basis(self):
+        """Reports written before the split carry no evidence_basis field."""
+        legacy_heuristic = {
+            "confidence": 0.95,
+            "p_value": 0.05,
+            "p_corrected": 0.05,
+            "physical_quantity": "IF_score",
+            "physical_value": 0.95,
+            "method": "empirical_rank",
+            "annotation": "Isolation forest score 0.950 (rank p=5.00e-02)",
+        }
+        restored = ConfidenceScore.from_dict(legacy_heuristic)
+        assert restored.evidence_basis == EVIDENCE_HEURISTIC
+        assert restored.heuristic_score == pytest.approx(0.95)
+
+        legacy_tail = dict(legacy_heuristic, method="gaussian_sf")
+        assert ConfidenceScore.from_dict(legacy_tail).evidence_basis == EVIDENCE_TAIL
+
     def test_known_bh_fdr_values(self):
         """Verify BH-FDR calculation against manually computed values."""
         anomalies = []
@@ -909,17 +1087,22 @@ class TestFDRCorrection:
 
         apply_fdr_correction(anomalies)
 
-        # Sorted by p: 0.01 (rank 1, idx 0), 0.03 (rank 2, idx 2), 0.04 (rank 3, idx 1)
-        # BH: corrected[0] = 0.01*3/1 = 0.03
-        #     corrected[2] = 0.03*3/2 = 0.045
-        #     corrected[1] = 0.04*3/3 = 0.04
-        # Monotonicity (reverse over original indices 2->1->0):
-        #   corrected[1] = min(0.04, corrected[2]=0.045) = 0.04
-        #   corrected[0] = min(0.03, corrected[1]=0.04) = 0.03
-        # Final: [0.03, 0.04, 0.045]
+        # Raw p by index: [0.01, 0.04, 0.03]
+        # Rank order (ascending): 0.01 (idx 0), 0.03 (idx 2), 0.04 (idx 1)
+        # Scale each by n/rank:
+        #   rank 1: 0.01 * 3/1 = 0.03
+        #   rank 2: 0.03 * 3/2 = 0.045
+        #   rank 3: 0.04 * 3/3 = 0.04
+        # Step-up monotonicity runs over the RANK sequence, from the
+        # largest rank down, taking a running minimum:
+        #   rank 3 -> 0.04
+        #   rank 2 -> min(0.045, 0.04) = 0.04
+        #   rank 1 -> min(0.03,  0.04) = 0.03
+        # Scatter back to input order: [0.03, 0.04, 0.04]
+        # This matches scipy.stats.false_discovery_control exactly.
         assert anomalies[0].confidence.p_corrected == pytest.approx(0.03, abs=1e-10)
         assert anomalies[1].confidence.p_corrected == pytest.approx(0.04, abs=1e-10)
-        assert anomalies[2].confidence.p_corrected == pytest.approx(0.045, abs=1e-10)
+        assert anomalies[2].confidence.p_corrected == pytest.approx(0.04, abs=1e-10)
 
 
 # ---------------------------------------------------------------------------
@@ -933,12 +1116,16 @@ class TestSpatialGrouping:
     def test_two_close_pixel_anomalies_same_group(self):
         """Two anomalies within 10px should be in the same group."""
         a1 = Anomaly(
-            anomaly_type="lens_arc", detector="lens",
-            pixel_x=100.0, pixel_y=100.0,
+            anomaly_type="lens_arc",
+            detector="lens",
+            pixel_x=100.0,
+            pixel_y=100.0,
         )
         a2 = Anomaly(
-            anomaly_type="overdensity", detector="distribution",
-            pixel_x=105.0, pixel_y=105.0,
+            anomaly_type="overdensity",
+            detector="distribution",
+            pixel_x=105.0,
+            pixel_y=105.0,
         )
         dist = np.sqrt(25 + 25)
         assert dist < 15.0  # within default pixel_tolerance
@@ -951,12 +1138,16 @@ class TestSpatialGrouping:
     def test_two_far_pixel_anomalies_no_group(self):
         """Two anomalies >15px apart should not be grouped."""
         a1 = Anomaly(
-            anomaly_type="lens_arc", detector="lens",
-            pixel_x=100.0, pixel_y=100.0,
+            anomaly_type="lens_arc",
+            detector="lens",
+            pixel_x=100.0,
+            pixel_y=100.0,
         )
         a2 = Anomaly(
-            anomaly_type="overdensity", detector="distribution",
-            pixel_x=200.0, pixel_y=200.0,
+            anomaly_type="overdensity",
+            detector="distribution",
+            pixel_x=200.0,
+            pixel_y=200.0,
         )
         assign_spatial_groups([a1, a2])
 
@@ -966,12 +1157,16 @@ class TestSpatialGrouping:
     def test_sky_coord_grouping(self):
         """Two anomalies with nearby sky coords should group."""
         a1 = Anomaly(
-            anomaly_type="lens_arc", detector="lens",
-            sky_ra=180.0, sky_dec=45.0,
+            anomaly_type="lens_arc",
+            detector="lens",
+            sky_ra=180.0,
+            sky_dec=45.0,
         )
         a2 = Anomaly(
-            anomaly_type="overdensity", detector="distribution",
-            sky_ra=180.0001, sky_dec=45.0001,
+            anomaly_type="overdensity",
+            detector="distribution",
+            sky_ra=180.0001,
+            sky_dec=45.0001,
         )
         # Separation ~ small fraction of arcsec
         assign_spatial_groups([a1, a2])
@@ -982,12 +1177,16 @@ class TestSpatialGrouping:
     def test_sky_coord_far_apart(self):
         """Two anomalies with distant sky coords should not group."""
         a1 = Anomaly(
-            anomaly_type="lens_arc", detector="lens",
-            sky_ra=180.0, sky_dec=45.0,
+            anomaly_type="lens_arc",
+            detector="lens",
+            sky_ra=180.0,
+            sky_dec=45.0,
         )
         a2 = Anomaly(
-            anomaly_type="overdensity", detector="distribution",
-            sky_ra=181.0, sky_dec=46.0,
+            anomaly_type="overdensity",
+            detector="distribution",
+            sky_ra=181.0,
+            sky_dec=46.0,
         )
         assign_spatial_groups([a1, a2])
 
@@ -998,13 +1197,18 @@ class TestSpatialGrouping:
         """Mix of sky-coord and pixel-coord anomalies; pixel fallback used."""
         # a1 has both sky and pixel, a2 has only pixel
         a1 = Anomaly(
-            anomaly_type="lens_arc", detector="lens",
-            pixel_x=100.0, pixel_y=100.0,
-            sky_ra=180.0, sky_dec=45.0,
+            anomaly_type="lens_arc",
+            detector="lens",
+            pixel_x=100.0,
+            pixel_y=100.0,
+            sky_ra=180.0,
+            sky_dec=45.0,
         )
         a2 = Anomaly(
-            anomaly_type="overdensity", detector="distribution",
-            pixel_x=105.0, pixel_y=105.0,
+            anomaly_type="overdensity",
+            detector="distribution",
+            pixel_x=105.0,
+            pixel_y=105.0,
         )
         # a2 has no sky coords, so sky comparison skipped; falls back to pixel
         assign_spatial_groups([a1, a2])
@@ -1015,16 +1219,22 @@ class TestSpatialGrouping:
     def test_three_in_chain(self):
         """A-B close, B-C close but A-C far: all three should share group via union-find."""
         a = Anomaly(
-            anomaly_type="t1", detector="lens",
-            pixel_x=100.0, pixel_y=100.0,
+            anomaly_type="t1",
+            detector="lens",
+            pixel_x=100.0,
+            pixel_y=100.0,
         )
         b = Anomaly(
-            anomaly_type="t2", detector="distribution",
-            pixel_x=110.0, pixel_y=100.0,
+            anomaly_type="t2",
+            detector="distribution",
+            pixel_x=110.0,
+            pixel_y=100.0,
         )
         c = Anomaly(
-            anomaly_type="t3", detector="galaxy",
-            pixel_x=120.0, pixel_y=100.0,
+            anomaly_type="t3",
+            detector="galaxy",
+            pixel_x=120.0,
+            pixel_y=100.0,
         )
         # A-B: 10px (close), B-C: 10px (close), A-C: 20px (far)
         assign_spatial_groups([a, b, c])
@@ -1035,8 +1245,10 @@ class TestSpatialGrouping:
     def test_single_anomaly_no_group(self):
         """A single anomaly gets no group_id (groups require 2+ members)."""
         a = Anomaly(
-            anomaly_type="test", detector="lens",
-            pixel_x=100.0, pixel_y=100.0,
+            anomaly_type="test",
+            detector="lens",
+            pixel_x=100.0,
+            pixel_y=100.0,
         )
         assign_spatial_groups([a])
         assert a.group_id is None
@@ -1048,12 +1260,16 @@ class TestSpatialGrouping:
     def test_group_id_format(self):
         """Group IDs should be formatted as 'grp_NNN'."""
         a1 = Anomaly(
-            anomaly_type="t1", detector="lens",
-            pixel_x=100.0, pixel_y=100.0,
+            anomaly_type="t1",
+            detector="lens",
+            pixel_x=100.0,
+            pixel_y=100.0,
         )
         a2 = Anomaly(
-            anomaly_type="t2", detector="distribution",
-            pixel_x=105.0, pixel_y=105.0,
+            anomaly_type="t2",
+            detector="distribution",
+            pixel_x=105.0,
+            pixel_y=105.0,
         )
         assign_spatial_groups([a1, a2])
 
@@ -1073,8 +1289,10 @@ class TestGroupSummary:
     def test_two_member_group(self):
         """Two anomalies in same group -> Fisher combined p-value."""
         a1 = Anomaly(
-            anomaly_type="lens_arc", detector="lens",
-            pixel_x=100.0, pixel_y=100.0,
+            anomaly_type="lens_arc",
+            detector="lens",
+            pixel_x=100.0,
+            pixel_y=100.0,
         )
         a1.confidence = ConfidenceScore(
             confidence=0.999,
@@ -1088,8 +1306,10 @@ class TestGroupSummary:
         a1.group_id = "grp_001"
 
         a2 = Anomaly(
-            anomaly_type="overdensity", detector="distribution",
-            pixel_x=105.0, pixel_y=105.0,
+            anomaly_type="overdensity",
+            detector="distribution",
+            pixel_x=105.0,
+            pixel_y=105.0,
         )
         a2.confidence = ConfidenceScore(
             confidence=0.99,
@@ -1125,8 +1345,10 @@ class TestGroupSummary:
     def test_member_without_confidence(self):
         """Members without confidence should appear in details but not p-values."""
         a1 = Anomaly(
-            anomaly_type="lens_arc", detector="lens",
-            pixel_x=100.0, pixel_y=100.0,
+            anomaly_type="lens_arc",
+            detector="lens",
+            pixel_x=100.0,
+            pixel_y=100.0,
         )
         a1.confidence = ConfidenceScore(
             confidence=0.999,
@@ -1140,8 +1362,10 @@ class TestGroupSummary:
         a1.group_id = "grp_001"
 
         a2 = Anomaly(
-            anomaly_type="test", detector="galaxy",
-            pixel_x=105.0, pixel_y=105.0,
+            anomaly_type="test",
+            detector="galaxy",
+            pixel_x=105.0,
+            pixel_y=105.0,
         )
         a2.group_id = "grp_001"
         # a2.confidence is None
@@ -1162,8 +1386,10 @@ class TestGroupSummary:
         p_values = [0.01, 0.02, 0.03]
         for i, p in enumerate(p_values):
             a = Anomaly(
-                anomaly_type=f"type_{i}", detector=f"det_{i}",
-                pixel_x=100.0 + i, pixel_y=100.0,
+                anomaly_type=f"type_{i}",
+                detector=f"det_{i}",
+                pixel_x=100.0 + i,
+                pixel_y=100.0,
             )
             a.confidence = ConfidenceScore(
                 confidence=1 - p,
@@ -1212,9 +1438,9 @@ class TestExtractAnomaliesIntegration:
         anomalies = _extract_anomalies(detection, image=None)
 
         for a in anomalies:
-            assert a.confidence is not None, (
-                f"Anomaly {a.anomaly_type} from {a.detector} has no confidence score"
-            )
+            assert (
+                a.confidence is not None
+            ), f"Anomaly {a.anomaly_type} from {a.detector} has no confidence score"
             assert 0.0 <= a.confidence.confidence <= 1.0
             assert a.confidence.p_value >= 0
             assert a.confidence.p_corrected >= 0
@@ -1250,10 +1476,14 @@ class TestExtractAnomaliesIntegration:
         # Create 30 high-significance overdensities
         overdensities = []
         for i in range(30):
-            overdensities.append({
-                "x": 10 + i * 5, "y": 10 + i * 5,
-                "sigma": 5.0 + i * 0.1, "significance": 5.0 + i * 0.1,
-            })
+            overdensities.append(
+                {
+                    "x": 10 + i * 5,
+                    "y": 10 + i * 5,
+                    "sigma": 5.0 + i * 0.1,
+                    "significance": 5.0 + i * 0.1,
+                }
+            )
 
         detection = {
             "distribution": {"overdensities": overdensities},
@@ -1335,8 +1565,13 @@ class TestExtractAnomaliesIntegration:
             },
             "kinematic": {
                 "comoving_groups": [
-                    {"mean_ra": 180.0, "mean_dec": 45.0, "n_members": 10,
-                     "expected_field": 1.0, "significance": 0.9},
+                    {
+                        "mean_ra": 180.0,
+                        "mean_dec": 45.0,
+                        "n_members": 10,
+                        "expected_field": 1.0,
+                        "significance": 0.9,
+                    },
                 ],
                 "stream_candidates": [],
                 "runaway_stars": [],
@@ -1367,10 +1602,13 @@ class TestExtractAnomaliesIntegration:
         # Create 600 overdensities -- more than _MAX_PER_DETECTOR_SYSTEM (500)
         overdensities = []
         for i in range(600):
-            overdensities.append({
-                "x": i % 100, "y": i // 100,
-                "sigma": 5.0 + (i % 10) * 0.1,
-            })
+            overdensities.append(
+                {
+                    "x": i % 100,
+                    "y": i // 100,
+                    "sigma": 5.0 + (i % 10) * 0.1,
+                }
+            )
 
         detection = {
             "distribution": {"overdensities": overdensities},
@@ -1402,8 +1640,16 @@ class TestExtractAnomaliesIntegration:
         anomalies = _extract_anomalies(detection, image=None)
 
         for i in range(len(anomalies) - 1):
-            conf_i = anomalies[i].confidence.confidence if anomalies[i].confidence else anomalies[i].score
-            conf_next = anomalies[i + 1].confidence.confidence if anomalies[i + 1].confidence else anomalies[i + 1].score
+            conf_i = (
+                anomalies[i].confidence.confidence
+                if anomalies[i].confidence
+                else anomalies[i].score
+            )
+            conf_next = (
+                anomalies[i + 1].confidence.confidence
+                if anomalies[i + 1].confidence
+                else anomalies[i + 1].score
+            )
             assert conf_i >= conf_next - 1e-10
 
     def test_population_anomalies_scored(self):

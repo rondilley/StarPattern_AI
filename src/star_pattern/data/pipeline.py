@@ -5,12 +5,12 @@ from __future__ import annotations
 from typing import Any
 
 from star_pattern.core.config import DataConfig
-from star_pattern.core.sky_region import SkyRegion, RegionData
+from star_pattern.core.sky_region import RegionData, SkyRegion
 from star_pattern.data.base import DataSource
 from star_pattern.data.cache import DataCache
-from star_pattern.data.sdss import SDSSDataSource
 from star_pattern.data.gaia import GaiaDataSource
 from star_pattern.data.mast import MASTDataSource
+from star_pattern.data.sdss import SDSSDataSource
 from star_pattern.data.ztf import ZTFDataSource
 from star_pattern.utils.logging import get_logger
 
@@ -121,17 +121,13 @@ class DataPipeline:
                 if source is None:
                     continue
                 try:
-                    epoch_images = source.fetch_epoch_images(
-                        region, **temporal_kwargs
-                    )
+                    epoch_images = source.fetch_epoch_images(region, **temporal_kwargs)
                     if not epoch_images:
                         continue
                     for band, epochs in epoch_images.items():
                         all_temporal.setdefault(band, []).extend(epochs)
                 except Exception as e:
-                    logger.warning(
-                        f"Temporal fetch from {source_name} failed: {e}"
-                    )
+                    logger.warning(f"Temporal fetch from {source_name} failed: {e}")
             # Sort merged epochs by MJD within each band
             for band in all_temporal:
                 all_temporal[band].sort(key=lambda e: e.mjd)
@@ -141,8 +137,11 @@ class DataPipeline:
         logger.info(
             f"Region data: {len(merged.images)} images, "
             f"{sum(len(c) for c in merged.catalogs.values())} catalog entries"
-            + (f", {sum(len(v) for v in merged.temporal_images.values())} epoch images"
-               if merged.temporal_images else "")
+            + (
+                f", {sum(len(v) for v in merged.temporal_images.values())} epoch images"
+                if merged.temporal_images
+                else ""
+            )
         )
         return merged
 

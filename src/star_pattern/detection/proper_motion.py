@@ -5,7 +5,6 @@ from __future__ import annotations
 from typing import Any
 
 import numpy as np
-from scipy import stats
 
 from star_pattern.core.catalog import StarCatalog
 from star_pattern.core.config import DetectionConfig
@@ -73,10 +72,9 @@ class ProperMotionAnalyzer:
 
         # Build arrays
         positions = np.array([[e.ra, e.dec] for e in pm_entries])
-        pm_data = np.array([
-            [float(e.properties["pmra"]), float(e.properties["pmdec"])]
-            for e in pm_entries
-        ])
+        pm_data = np.array(
+            [[float(e.properties["pmra"]), float(e.properties["pmdec"])] for e in pm_entries]
+        )
 
         try:
             comoving = self._find_comoving_groups(pm_data, pm_entries)
@@ -104,12 +102,15 @@ class ProperMotionAnalyzer:
         n_streams = len(results["stream_candidates"])
         n_runaways = len(results["runaway_stars"])
 
-        kinematic_score = float(np.clip(
-            0.4 * min(n_groups, 3) / 3.0
-            + 0.35 * min(n_streams, 2) / 2.0
-            + 0.25 * min(n_runaways, 5) / 5.0,
-            0.0, 1.0,
-        ))
+        kinematic_score = float(
+            np.clip(
+                0.4 * min(n_groups, 3) / 3.0
+                + 0.35 * min(n_streams, 2) / 2.0
+                + 0.25 * min(n_runaways, 5) / 5.0,
+                0.0,
+                1.0,
+            )
+        )
 
         results["kinematic_score"] = kinematic_score
         results["n_detections"] = n_groups + n_streams + n_runaways
@@ -158,24 +159,27 @@ class ProperMotionAnalyzer:
             # a PM-space cell of size eps^2, scaled by number of sources
             pm_range = np.ptp(pm_data, axis=0)
             pm_area = max(float(pm_range[0] * pm_range[1]), 1e-10)
-            cell_area = self.cluster_eps ** 2 * np.pi
+            cell_area = self.cluster_eps**2 * np.pi
             expected_field = max(
-                float(len(entries) * cell_area / pm_area), 0.1,
+                float(len(entries) * cell_area / pm_area),
+                0.1,
             )
 
-            groups.append({
-                "type": "comoving_group",
-                "n_members": member_count,
-                "mean_pmra": mean_pmra,
-                "mean_pmdec": mean_pmdec,
-                "std_pmra": std_pmra,
-                "std_pmdec": std_pmdec,
-                "mean_ra": mean_ra,
-                "mean_dec": mean_dec,
-                "pm_total": float(np.sqrt(mean_pmra**2 + mean_pmdec**2)),
-                "expected_field": expected_field,
-                "member_ids": [e.source_id for e in member_entries[:20]],
-            })
+            groups.append(
+                {
+                    "type": "comoving_group",
+                    "n_members": member_count,
+                    "mean_pmra": mean_pmra,
+                    "mean_pmdec": mean_pmdec,
+                    "std_pmra": std_pmra,
+                    "std_pmdec": std_pmdec,
+                    "mean_ra": mean_ra,
+                    "mean_dec": mean_dec,
+                    "pm_total": float(np.sqrt(mean_pmra**2 + mean_pmdec**2)),
+                    "expected_field": expected_field,
+                    "member_ids": [e.source_id for e in member_entries[:20]],
+                }
+            )
 
         return groups
 
@@ -244,18 +248,20 @@ class ProperMotionAnalyzer:
             member_pm = pm_data[best_inliers]
             member_pos = positions[best_inliers]
 
-            streams.append({
-                "type": "stream",
-                "n_members": best_count,
-                "mean_ra": float(np.mean(member_pos[:, 0])),
-                "mean_dec": float(np.mean(member_pos[:, 1])),
-                "mean_pmra": float(np.mean(member_pm[:, 0])),
-                "mean_pmdec": float(np.mean(member_pm[:, 1])),
-                "extent_deg": float(
-                    np.sqrt(np.ptp(member_pos[:, 0])**2 + np.ptp(member_pos[:, 1])**2)
-                ),
-                "member_ids": [e.source_id for e in member_entries[:20]],
-            })
+            streams.append(
+                {
+                    "type": "stream",
+                    "n_members": best_count,
+                    "mean_ra": float(np.mean(member_pos[:, 0])),
+                    "mean_dec": float(np.mean(member_pos[:, 1])),
+                    "mean_pmra": float(np.mean(member_pm[:, 0])),
+                    "mean_pmdec": float(np.mean(member_pm[:, 1])),
+                    "extent_deg": float(
+                        np.sqrt(np.ptp(member_pos[:, 0]) ** 2 + np.ptp(member_pos[:, 1]) ** 2)
+                    ),
+                    "member_ids": [e.source_id for e in member_entries[:20]],
+                }
+            )
 
         return streams
 
@@ -271,7 +277,7 @@ class ProperMotionAnalyzer:
         """
         runaways = []
 
-        pm_total = np.sqrt(pm_data[:, 0]**2 + pm_data[:, 1]**2)
+        pm_total = np.sqrt(pm_data[:, 0] ** 2 + pm_data[:, 1] ** 2)
         median_pm = np.median(pm_total)
         mad = np.median(np.abs(pm_total - median_pm))
         # Robust sigma estimate
@@ -286,16 +292,18 @@ class ProperMotionAnalyzer:
 
             if deviation > 3.0 and pm > self.pm_min:
                 parallax = entry.properties.get("parallax")
-                runaways.append({
-                    "type": "runaway",
-                    "source_id": entry.source_id,
-                    "ra": entry.ra,
-                    "dec": entry.dec,
-                    "pmra": float(pm_data[i, 0]),
-                    "pmdec": float(pm_data[i, 1]),
-                    "pm_total": float(pm),
-                    "deviation_sigma": float(deviation),
-                    "parallax": float(parallax) if parallax is not None else None,
-                })
+                runaways.append(
+                    {
+                        "type": "runaway",
+                        "source_id": entry.source_id,
+                        "ra": entry.ra,
+                        "dec": entry.dec,
+                        "pmra": float(pm_data[i, 0]),
+                        "pmdec": float(pm_data[i, 1]),
+                        "pm_total": float(pm),
+                        "deviation_sigma": float(deviation),
+                        "parallax": float(parallax) if parallax is not None else None,
+                    }
+                )
 
         return runaways

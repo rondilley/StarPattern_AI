@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 from star_pattern.llm.providers.base import LLMProvider
-from star_pattern.utils.retry import retry_with_backoff
+from star_pattern.llm.providers.models import GEMINI_DEFAULT_MODEL
 from star_pattern.utils.logging import get_logger
+from star_pattern.utils.retry import retry_with_backoff
 
 logger = get_logger("llm.gemini")
 
@@ -12,7 +13,7 @@ logger = get_logger("llm.gemini")
 class GeminiProvider(LLMProvider):
     """Google Gemini provider."""
 
-    def __init__(self, api_key: str, model: str = "gemini-2.5-flash"):
+    def __init__(self, api_key: str, model: str = GEMINI_DEFAULT_MODEL):
         self._api_key = api_key
         self._model = model
         self._client_cache: dict[str | None, object] = {}
@@ -25,9 +26,7 @@ class GeminiProvider(LLMProvider):
             kwargs = {}
             if system_prompt:
                 kwargs["system_instruction"] = system_prompt
-            self._client_cache[system_prompt] = genai.GenerativeModel(
-                self._model, **kwargs
-            )
+            self._client_cache[system_prompt] = genai.GenerativeModel(self._model, **kwargs)
         return self._client_cache[system_prompt]
 
     @property
@@ -53,14 +52,29 @@ class GeminiProvider(LLMProvider):
     ) -> str:
         client = self._get_client(system_prompt)
 
+        from google.api_core import exceptions as google_exceptions
+
         effective_tokens = max(max_tokens, self._MIN_OUTPUT_TOKENS)
-        response = client.generate_content(
-            prompt,
-            generation_config={
-                "max_output_tokens": effective_tokens,
-                "temperature": temperature,
-            },
-        )
+        try:
+            response = client.generate_content(
+                prompt,
+                generation_config={
+                    "max_output_tokens": effective_tokens,
+                    "temperature": temperature,
+                },
+            )
+        except google_exceptions.NotFound:
+            logger.error(
+                "Gemini model %s not found. Check the identifier in " "llm/providers/models.py.",
+                self._model,
+            )
+            raise
+        except google_exceptions.PermissionDenied:
+            logger.error("Gemini API key rejected")
+            raise
+        except google_exceptions.InvalidArgument as exc:
+            logger.error("Gemini rejected the request: %s", exc)
+            raise
 
         # Handle empty responses from safety filters or token exhaustion
         if not response.candidates:
@@ -76,8 +90,7 @@ class GeminiProvider(LLMProvider):
 
     def is_available(self) -> bool:
         try:
-            import google.generativeai
-
-            return bool(self._api_key)
+            import google.generativeai  # noqa: F401
         except ImportError:
             return False
+        return bool(self._api_key)

@@ -1,0 +1,72 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python \"$CLAUDE_PROJECT_DIR/.claude/hooks/no_emoji.py\"",
+            "timeout": 10,
+            "statusMessage": "Checking for emoji/symbols (Rule 1)"
+          },
+          {
+            "type": "command",
+            "command": "python \"$CLAUDE_PROJECT_DIR/.claude/hooks/no_stubs.py\"",
+            "timeout": 10,
+            "statusMessage": "Checking for stubs/placeholders/mocks (Rule 3)"
+          },
+          {
+            "type": "command",
+            "command": "python \"$CLAUDE_PROJECT_DIR/.claude/hooks/protect_rules.py\"",
+            "timeout": 10,
+            "statusMessage": "Protecting rules file (Rule 8)"
+          },
+          {
+            "type": "command",
+            "command": "python \"$CLAUDE_PROJECT_DIR/.claude/hooks/api_error_handling.py\"",
+            "timeout": 10,
+            "statusMessage": "Checking API error handling (Rule 5)"
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python \"$CLAUDE_PROJECT_DIR/.claude/hooks/no_secrets_git.py\"",
+            "timeout": 10,
+            "statusMessage": "Checking git commands for secrets (Rule 4)"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python \"$CLAUDE_PROJECT_DIR/.claude/hooks/remind_docs.py\"",
+            "timeout": 10,
+            "statusMessage": "Checking for doc update reminders (Rules 6-7)"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python \"$CLAUDE_PROJECT_DIR/.claude/hooks/check_success_claims.py\"",
+            "timeout": 15,
+            "statusMessage": "Validating success claims are backed by testing (Rule 2)"
+          }
+        ]
+      }
+    ]
+  }
+}

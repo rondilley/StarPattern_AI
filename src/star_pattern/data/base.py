@@ -3,11 +3,10 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Any
 
-from star_pattern.core.sky_region import SkyRegion, RegionData, EpochImage
-from star_pattern.core.fits_handler import FITSImage
 from star_pattern.core.catalog import StarCatalog
+from star_pattern.core.fits_handler import FITSImage
+from star_pattern.core.sky_region import EpochImage, RegionData, SkyRegion
 
 
 class DataSource(ABC):

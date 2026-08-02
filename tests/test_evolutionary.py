@@ -1,12 +1,11 @@
 """Tests for evolutionary search."""
 
 import numpy as np
-import pytest
 
 from star_pattern.core.config import PipelineConfig
 from star_pattern.core.fits_handler import FITSImage
-from star_pattern.discovery.genome import DetectionGenome
 from star_pattern.discovery.evolutionary import EvolutionaryDiscovery
+from star_pattern.discovery.genome import DetectionGenome
 from star_pattern.discovery.presets import get_preset_genomes
 
 
@@ -60,7 +59,9 @@ class TestEvolutionaryDiscovery:
         assert len(engine.history) == 2
 
     def test_evolution_with_real_fitness(
-        self, sample_config: PipelineConfig, synthetic_image: FITSImage,
+        self,
+        sample_config: PipelineConfig,
+        synthetic_image: FITSImage,
     ):
         """Initialize population, evaluate on a synthetic image, verify fitness values."""
         sample_config.evolution.population_size = 5
